@@ -394,6 +394,8 @@ default_output_dir = Path(
     os.environ.get("OUTPUT_DIR", str(ROOT / "downloads")),
 ).expanduser().resolve()
 last_output_dir = default_output_dir
+# Host path shown in the UI when running under Docker (from compose/.env).
+host_download_dir = os.environ.get("HOST_DOWNLOAD_DIR", "").strip()
 job = JobState(output_dir=str(default_output_dir))
 
 app = FastAPI(title="Music Downloader", docs_url=None, redoc_url=None)
@@ -801,6 +803,7 @@ async def status() -> dict[str, Any]:
     if not snap.get("output_dir"):
         snap["output_dir"] = str(last_output_dir)
     snap["default_output_dir"] = str(default_output_dir)
+    snap["host_download_dir"] = host_download_dir or None
     root = browse_root()
     snap["browse_root"] = str(root) if root else None
     snap["docker"] = running_in_docker()

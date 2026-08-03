@@ -4,21 +4,25 @@ services:
     container_name: music-downloader
     restart: unless-stopped
     ports:
-      # Recommended: publish only on your Tailscale IP so LAN/public can't reach it.
-      # Set TAILSCALE_IP in a .env file (see .env.example), e.g. TAILSCALE_IP=100.64.1.2
+      # Publish only on your Tailscale IP when possible.
+      # Set TAILSCALE_IP in .env (see .env.example).
       - "${TAILSCALE_IP:-0.0.0.0}:8787:8787"
     environment:
       BIND_HOST: "0.0.0.0"
       PORT: "8787"
+      # Inside the container downloads always write to /data.
+      # That directory is the host folder from HOST_DOWNLOAD_DIR (volume below).
       OUTPUT_DIR: "/data"
+      BROWSE_ROOT: "/data"
+      # Host path string for UI display (must match the volume source).
+      HOST_DOWNLOAD_DIR: "${HOST_DOWNLOAD_DIR:-./downloads}"
       ALLOW_LOCALHOST: "1"
-      # Docker port-publish NATs client IPs, so in-app Tailscale ACL can't see 100.x peers.
-      # Keep this off and rely on publishing only to TAILSCALE_IP above.
+      # Docker NATs client IPs — rely on publishing only to TAILSCALE_IP.
       REQUIRE_TAILSCALE_CLIENT: "0"
       DOCKER: "1"
     volumes:
-      # Host folder ↔ container /data (MP3s appear on the PC)
-      # Set HOST_DOWNLOAD_DIR in .env, e.g. D:/Music or ./downloads
+      # Changing HOST_DOWNLOAD_DIR in .env only takes effect after recreate:
+      #   docker compose up -d --force-recreate
       - "${HOST_DOWNLOAD_DIR:-./downloads}:/data"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/status', timeout=3)"]

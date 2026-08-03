@@ -284,8 +284,10 @@
 
     const bits = [];
     if (s.collection) bits.push(s.collection);
-    if (s.docker && s.browse_root) {
-      bits.push(`Host folder mounted at ${s.browse_root}`);
+    if (s.host_download_dir) {
+      bits.push(`Host: ${s.host_download_dir}`);
+    } else if (s.docker && s.browse_root) {
+      bits.push(`Mounted at ${s.browse_root}`);
     } else if (s.output_dir) {
       bits.push(s.output_dir);
     }
@@ -293,9 +295,11 @@
 
     const saveHint = document.getElementById("save-hint");
     if (saveHint) {
-      saveHint.textContent = s.docker
-        ? "Inside the downloads folder on this PC"
-        : "Folder on this PC";
+      saveHint.textContent = s.host_download_dir
+        ? `Host PC: ${s.host_download_dir}`
+        : s.docker
+          ? "Inside the downloads folder on this PC"
+          : "Folder on this PC";
     }
 
     renderTracks(s.tracks || []);
