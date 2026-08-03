@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Music Downloader">
+  <defs>
+    <linearGradient id="g" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1a2026"/>
+      <stop offset="100%" stop-color="#0d1013"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#g)"/>
+  <circle cx="22" cy="44" r="9" fill="#3dbf7a"/>
+  <circle cx="42" cy="40" r="7" fill="#3dbf7a"/>
+  <path d="M31 14v30.2c-1.4-.8-3.1-1.2-4.8-1.2-1.5 0-3 .3-4.2.9V22.5L31 14z" fill="#e8edf2"/>
+  <path d="M31 14l17 5.2v22.6c-1.2-.7-2.7-1.1-4.2-1.1-1.4 0-2.8.3-4 .8V19.8L31 14z" fill="#e8edf2"/>
+  <path d="M31 14l17 5.2-1.2 3.2L31 18.6V14z" fill="#9aa5b1"/>
+</svg>
