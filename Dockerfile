@@ -10,10 +10,18 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements-docker.txt .
-RUN pip install --no-cache-dir -r requirements-docker.txt \
+RUN pip install --no-cache-dir -r requirements-docker.txt
+
+# yt-dlp breaks whenever YouTube changes, so it is installed in its own layer.
+# Bump YTDLP_REFRESH (e.g. --build-arg YTDLP_REFRESH=$(date +%s)) to force a
+# fresh copy instead of reusing a cached, stale layer.
+ARG YTDLP_REFRESH=1
+RUN echo "yt-dlp refresh: ${YTDLP_REFRESH}" \
     && pip install --no-cache-dir -U "yt-dlp[default,curl-cffi]"
 
-COPY web_server.py music_downloader.py download_playlist.py metadata_tags.py ./
+# Copy every module: an explicit list silently ships a broken image the first
+# time a new file is added.
+COPY *.py ./
 COPY web/static ./web/static
 
 ENV BIND_HOST=0.0.0.0 \

@@ -1,6 +1,10 @@
 services:
   music-downloader:
-    build: .
+    build:
+      context: .
+      args:
+        # Change this value to force a fresh yt-dlp install on the next build.
+        YTDLP_REFRESH: "${YTDLP_REFRESH:-1}"
     container_name: music-downloader
     restart: unless-stopped
     ports:
@@ -20,6 +24,14 @@ services:
       # Docker NATs client IPs — rely on publishing only to TAILSCALE_IP.
       REQUIRE_TAILSCALE_CLIENT: "0"
       DOCKER: "1"
+      # Download methods tried per song, in order (";" separates methods,
+      # "," groups yt-dlp player clients). Leave unset for the built-in ladder:
+      #   auto;web_safari;android_vr;ios;mweb;tv
+      # YTDLP_STRATEGIES: "auto;web_safari;android_vr"
+      # Pin a single client set instead (disables the ladder):
+      # YTDLP_PLAYER_CLIENTS: "web_safari,web_embedded"
+      # How many methods to try per song before giving up (default 4).
+      # YTDLP_MAX_STRATEGIES: "4"
     volumes:
       # Changing HOST_DOWNLOAD_DIR in .env only takes effect after recreate:
       #   docker compose up -d --force-recreate

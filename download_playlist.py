@@ -4,14 +4,88 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import yt_dlp
 
 SUPPORTED_BROWSERS = ("chrome", "edge", "firefox", "brave", "chromium", "opera", "vivaldi")
+
+
+def ytdlp_version() -> str:
+    try:
+        from yt_dlp.version import __version__
+
+        return str(__version__)
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+@dataclass(frozen=True)
+class DownloadStrategy:
+    """One way of asking YouTube for audio.
+
+    YouTube blocks player clients unpredictably (login gates, DRM-only formats,
+    SABR throttling), so a single hardcoded client set goes stale. Each strategy
+    is tried in order until one yields a file.
+    """
+
+    name: str
+    # None = let yt-dlp pick its own current defaults (best long-term bet).
+    player_clients: tuple[str, ...] | None = None
+    # Permissive by design: some clients expose no format matching plain
+    # "bestaudio", which otherwise fails with "Requested format is not available".
+    fmt: str = "bestaudio/bestaudio*/best"
+    note: str = ""
+
+
+# Ordered fallback ladder. Each entry isolates one client group: combining them
+# in a single request lets a 403 from one client sink the whole attempt.
+BUILTIN_STRATEGIES: tuple[DownloadStrategy, ...] = (
+    DownloadStrategy("auto", None, note="yt-dlp default clients"),
+    DownloadStrategy("web_safari", ("web_safari", "web_embedded"), note="browser clients"),
+    DownloadStrategy("android_vr", ("android_vr",), note="no JS runtime needed"),
+    DownloadStrategy("ios", ("ios",), note="mobile app client"),
+    DownloadStrategy("mweb", ("mweb",), note="mobile web"),
+    DownloadStrategy("tv", ("tv_simply", "tv"), note="TV clients (often need cookies)"),
+)
+
+
+def _parse_clients(text: str) -> tuple[str, ...] | None:
+    parts = tuple(p.strip() for p in text.split(",") if p.strip())
+    if not parts or parts == ("auto",) or parts == ("default",):
+        return None
+    return parts
+
+
+def download_strategies() -> list[DownloadStrategy]:
+    """Strategy ladder, overridable without a rebuild.
+
+    ``YTDLP_STRATEGIES`` takes a ``;``-separated list of client groups, e.g.
+    ``auto;android_vr;ios,mweb``. ``YTDLP_PLAYER_CLIENTS`` pins a single set.
+    """
+    pinned = os.environ.get("YTDLP_PLAYER_CLIENTS", "").strip()
+    if pinned:
+        clients = _parse_clients(pinned)
+        return [DownloadStrategy("pinned", clients, note="from YTDLP_PLAYER_CLIENTS")]
+
+    configured = os.environ.get("YTDLP_STRATEGIES", "").strip()
+    if configured:
+        out: list[DownloadStrategy] = []
+        for group in configured.split(";"):
+            group = group.strip()
+            if not group:
+                continue
+            clients = _parse_clients(group)
+            out.append(DownloadStrategy(group, clients, note="from YTDLP_STRATEGIES"))
+        if out:
+            return out
+
+    return list(BUILTIN_STRATEGIES)
 
 
 class _QuietLogger:
@@ -88,16 +162,17 @@ def build_options(
     noplaylist: bool = False,
     logger: object | None = None,
     verbose: bool = False,
+    strategy: DownloadStrategy | None = None,
 ) -> dict:
     if outtmpl is None:
         outtmpl = str(
             output_dir / "%(playlist_title)s" / "%(playlist_index)03d - %(title)s.%(ext)s"
         )
 
-    # Avoid the TVHTML5 client: YouTube often serves DRM-only formats there
-    # ("This video is DRM protected") even for normal public videos.
+    strategy = strategy or download_strategies()[0]
+
     options: dict = {
-        "format": "bestaudio/best",
+        "format": strategy.fmt,
         "outtmpl": outtmpl,
         "ignoreerrors": True,
         "noplaylist": noplaylist,
@@ -108,16 +183,6 @@ def build_options(
         "verbose": verbose,
         "logger": logger if logger is not None else _QuietLogger(),
         "extractor_retries": 5,
-        "extractor_args": {
-            "youtube": {
-                "player_client": [
-                    "default",
-                    "-tv",
-                    "web_safari",
-                    "web_embedded",
-                ],
-            },
-        },
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -129,6 +194,13 @@ def build_options(
         "writethumbnail": False,
         "embedthumbnail": False,
     }
+
+    # Only force clients when a strategy asks for it; otherwise yt-dlp's own
+    # (frequently updated) defaults decide, which survives YouTube changes best.
+    if strategy.player_clients:
+        options["extractor_args"] = {
+            "youtube": {"player_client": list(strategy.player_clients)},
+        }
 
     if ffmpeg_location:
         options["ffmpeg_location"] = ffmpeg_location

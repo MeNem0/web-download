@@ -5,6 +5,8 @@
     crumbs: $("lib-crumbs"),
     summary: $("lib-summary"),
     list: $("lib-list"),
+    search: $("lib-search"),
+    btnSearchClear: $("btn-lib-search-clear"),
     btnNew: $("btn-lib-new"),
     btnCollapse: $("btn-lib-collapse"),
     btnRefresh: $("btn-lib-refresh"),
@@ -18,18 +20,24 @@
     title: $("meta-track-title"),
     titleField: $("meta-title-field"),
     artists: $("meta-artists"),
+    albumArtist: $("meta-album-artist"),
     album: $("meta-album"),
     trackNo: $("meta-track-no"),
     filename: $("meta-filename"),
     bulkHint: $("meta-bulk-hint"),
     seqWrap: $("meta-seq-wrap"),
     numberSeq: $("meta-number-seq"),
+    compilation: $("meta-compilation"),
+    compilationLabel: $("meta-compilation-label"),
     metaTitle: $("meta-title"),
     btnClose: $("btn-meta-close"),
     btnSave: $("btn-meta-save"),
     btnRename: $("btn-meta-rename"),
     btnDelete: $("btn-meta-delete"),
     btnCoverClear: $("btn-meta-cover-clear"),
+    btnCoverSearch: $("btn-meta-cover-search"),
+    coverSearchStatus: $("meta-cover-search-status"),
+    coverSearchResults: $("meta-cover-search-results"),
     nameModal: $("name-modal"),
     nameTitle: $("name-modal-title"),
     nameDetail: $("name-modal-detail"),
@@ -46,11 +54,17 @@
   let selectedPath = "";
   let bulkPaths = [];
   let editMode = "single"; // single | bulk
+  // Bulk edits keep tags the user did not touch, so the checkbox needs to
+  // distinguish "left alone" from "deliberately unchecked".
+  let compilationTouched = false;
   let coverObjectUrl = null;
   const expanded = new Set();
   const selected = new Set();
   const cache = new Map();
   let nameResolver = null;
+  let searchQuery = "";
+  let searchTimer = null;
+  let searchSeq = 0;
 
   function escapeHtml(value) {
     return String(value)
@@ -91,6 +105,112 @@
     }
     els.cover.src = url || "";
     els.cover.style.visibility = url ? "visible" : "hidden";
+  }
+
+  function setMetaCoverSearchStatus(message, { error = false } = {}) {
+    const el = els.coverSearchStatus;
+    if (!el) return;
+    if (!message) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      el.classList.remove("is-error");
+      return;
+    }
+    el.textContent = message;
+    el.classList.toggle("is-error", !!error);
+    el.classList.remove("hidden");
+  }
+
+  function clearMetaCoverSearch() {
+    if (els.coverSearchResults) {
+      els.coverSearchResults.innerHTML = "";
+      els.coverSearchResults.classList.add("hidden");
+    }
+    setMetaCoverSearchStatus("");
+  }
+
+  function metaCoverSearchQuery() {
+    const artist = (els.artists?.value || "").trim();
+    const album = (els.album?.value || "").trim();
+    const title = (els.title?.value || "").trim();
+    return [artist, album || title].filter(Boolean).join(" ").trim();
+  }
+
+  async function applyMetaCoverHit(hit) {
+    if (!hit?.artwork_url) return;
+    if (hit.album && els.album && !els.album.value.trim()) {
+      els.album.value = hit.album;
+    }
+    if (hit.artist && els.albumArtist && !els.albumArtist.value.trim()) {
+      els.albumArtist.value = hit.artist;
+    }
+    if (els.artists && !els.artists.value.trim() && hit.artist) {
+      els.artists.value = hit.artist;
+    }
+    els.coverUrl.value = hit.artwork_url;
+    setCoverSrc(hit.artwork_url);
+    setMetaCoverSearchStatus(`Cover set · ${hit.album || hit.title}`);
+  }
+
+  async function runMetaCoverSearch() {
+    const q = metaCoverSearchQuery();
+    if (q.length < 2) {
+      setMetaCoverSearchStatus("Fill artist and album (or title) first.", { error: true });
+      return;
+    }
+    if (els.btnCoverSearch) els.btnCoverSearch.disabled = true;
+    setMetaCoverSearchStatus("Searching…");
+    try {
+      const res = await fetch(
+        `/api/download/cover/search?q=${encodeURIComponent(q)}&entity=all&limit=10`
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        clearMetaCoverSearch();
+        setMetaCoverSearchStatus(data.detail || "Search failed", { error: true });
+        return;
+      }
+      const results = data.results || [];
+      if (!results.length) {
+        if (els.coverSearchResults) {
+          els.coverSearchResults.innerHTML = "";
+          els.coverSearchResults.classList.add("hidden");
+        }
+        setMetaCoverSearchStatus("No matches.", { error: true });
+        return;
+      }
+      setMetaCoverSearchStatus(
+        `${results.length} result${results.length === 1 ? "" : "s"} — pick one`
+      );
+      const list = els.coverSearchResults;
+      if (!list) return;
+      list.innerHTML = "";
+      for (const hit of results) {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cover-hit";
+        const kindLabel = hit.kind === "song" ? "Single" : "Album";
+        const bits = [hit.artist, hit.year, kindLabel].filter(Boolean);
+        const art = String(hit.artwork_url || "").replaceAll('"', "&quot;");
+        btn.innerHTML = `
+          <img class="cover-hit-art" alt="" loading="lazy" src="${art}" />
+          <span class="cover-hit-body">
+            <span class="cover-hit-title">${escapeHtml(hit.album || hit.title || "")}</span>
+            <span class="cover-hit-meta">${escapeHtml(bits.join(" · "))}</span>
+          </span>
+        `;
+        btn.addEventListener("click", () => applyMetaCoverHit(hit));
+        li.appendChild(btn);
+        list.appendChild(li);
+      }
+      list.classList.remove("hidden");
+    } catch (err) {
+      clearMetaCoverSearch();
+      setMetaCoverSearchStatus(err.message || "Search failed", { error: true });
+    } finally {
+      if (els.btnCoverSearch) els.btnCoverSearch.disabled = false;
+    }
   }
 
   function askName({ title, label, detail = "", value = "", confirmLabel = "Save" }) {
@@ -205,6 +325,7 @@
 
   async function openFolder(path) {
     try {
+      if (searchQuery) clearSearch({ keepFocus: false });
       const data = await fetchListing(path);
       rootPath = data.root || rootPath;
       libPath = data.path || "";
@@ -214,7 +335,117 @@
     }
   }
 
+  function clearSearch({ keepFocus = true } = {}) {
+    searchQuery = "";
+    if (els.search) els.search.value = "";
+    if (els.btnSearchClear) els.btnSearchClear.disabled = true;
+    if (keepFocus) els.search?.focus();
+  }
+
+  async function fetchSearch(query) {
+    const qs = new URLSearchParams({ q: query, limit: "200" });
+    const res = await fetch(`/api/library/search?${qs}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "Search failed");
+    return data;
+  }
+
+  async function renderSearch(query) {
+    renderCrumbs();
+    const seq = ++searchSeq;
+    els.summary.textContent = "Searching…";
+    els.list.innerHTML = '<p class="track-empty">Searching library…</p>';
+    updateSelectionUi();
+    try {
+      const data = await fetchSearch(query);
+      if (seq !== searchSeq || searchQuery.trim() !== query) return;
+      rootPath = data.root || rootPath;
+      const folders = data.folders || [];
+      const files = data.files || [];
+      const total = folders.length + files.length;
+      els.summary.textContent = data.truncated
+        ? `${total} results (capped)`
+        : `${total} result${total === 1 ? "" : "s"}`;
+
+      if (!total) {
+        els.list.innerHTML =
+          '<p class="track-empty">No matches. Try another title, artist, or album.</p>';
+        updateSelectionUi();
+        return;
+      }
+
+      const html = [];
+      for (const folder of folders) {
+        html.push(renderSearchFolder(folder));
+      }
+      for (const file of files) {
+        html.push(renderSearchFile(file));
+      }
+      els.list.innerHTML = html.join("");
+      bindTreeEvents(els.list);
+      updateSelectionUi();
+    } catch (err) {
+      if (seq !== searchSeq) return;
+      els.list.innerHTML = `<p class="track-empty">${escapeHtml(err.message || "Error")}</p>`;
+      els.summary.textContent = "Search failed";
+    }
+  }
+
+  function renderSearchFolder(folder) {
+    const rel = folder.rel || folder.name;
+    return `
+      <div class="lib-node lib-search-hit" role="treeitem" style="--d:0">
+        <div class="lib-item is-folder">
+          <span class="lib-twist" aria-hidden="true"></span>
+          <div class="lib-body" data-enter="${escapeHtml(folder.path)}" role="button" tabindex="0">
+            <span class="lib-badge folder">Folder</span>
+            <div class="lib-copy">
+              <div class="lib-name">${escapeHtml(folder.name)}</div>
+              <div class="lib-sub">${escapeHtml(rel)}</div>
+            </div>
+          </div>
+          <div class="lib-actions">
+            <button class="lib-btn primary" type="button" data-enter="${escapeHtml(folder.path)}">Open</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderSearchFile(file) {
+    const meta = [file.artists, file.album].filter(Boolean).join(" · ");
+    const rel = file.rel || file.name;
+    const sub = [meta, rel].filter(Boolean).join(" · ");
+    const checked = selected.has(file.path) ? " checked" : "";
+    return `
+      <div class="lib-node lib-search-hit" role="treeitem" style="--d:0">
+        <div class="lib-item is-file${checked ? " is-selected" : ""}">
+          <label class="lib-check">
+            <input type="checkbox" data-select="${escapeHtml(file.path)}"${checked} />
+          </label>
+          <div class="lib-body" data-edit="${escapeHtml(file.path)}" role="button" tabindex="0">
+            <span class="lib-badge file">MP3</span>
+            <div class="lib-copy">
+              <div class="lib-name">${escapeHtml(file.title || file.name)}</div>
+              <div class="lib-sub">${escapeHtml(sub)}</div>
+            </div>
+          </div>
+          <div class="lib-actions">
+            <button class="lib-btn primary" type="button" data-edit="${escapeHtml(file.path)}">Edit</button>
+            <button class="lib-btn" type="button" data-rename="${escapeHtml(file.path)}">Rename</button>
+            <button class="lib-btn danger" type="button" data-delete="${escapeHtml(file.path)}">Delete</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
   async function render() {
+    const q = searchQuery.trim();
+    if (q) {
+      if (els.btnSearchClear) els.btnSearchClear.disabled = false;
+      await renderSearch(q);
+      return;
+    }
+    if (els.btnSearchClear) els.btnSearchClear.disabled = true;
     renderCrumbs();
     try {
       const data = await fetchListing(libPath || null);
@@ -371,6 +602,10 @@
 
   async function refresh() {
     invalidate(null);
+    if (searchQuery.trim()) {
+      await render();
+      return;
+    }
     await openFolder(libPath || null);
   }
 
@@ -464,6 +699,9 @@
     if (els.artists) {
       els.artists.placeholder = bulk ? "Leave blank to keep" : "";
     }
+    if (els.albumArtist) {
+      els.albumArtist.placeholder = bulk ? "Leave blank to keep" : "";
+    }
     if (els.album) {
       els.album.placeholder = bulk ? "Leave blank to keep" : "";
     }
@@ -472,6 +710,12 @@
       els.trackNo.disabled = false;
     }
     if (els.numberSeq) els.numberSeq.checked = false;
+    if (els.compilationLabel) {
+      els.compilationLabel.textContent = bulk
+        ? "Various artists compilation (leave alone to keep)"
+        : "Various artists compilation";
+    }
+    compilationTouched = false;
   }
 
   async function openEditor(path) {
@@ -486,8 +730,10 @@
     selectedPath = data.path;
     els.title.value = data.title || "";
     els.artists.value = data.artists || "";
+    if (els.albumArtist) els.albumArtist.value = data.album_artist || "";
     els.album.value = data.album || "";
     els.trackNo.value = data.track_number || "";
+    if (els.compilation) els.compilation.checked = !!data.compilation;
     els.coverUrl.value = "";
     els.filename.textContent = data.name || "";
     if (data.has_cover) {
@@ -495,6 +741,7 @@
     } else {
       setCoverSrc("");
     }
+    clearMetaCoverSearch();
     els.modal.classList.remove("hidden");
   }
 
@@ -506,11 +753,14 @@
     setEditorMode("bulk", paths.length);
     els.title.value = "";
     els.artists.value = "";
+    if (els.albumArtist) els.albumArtist.value = "";
     els.album.value = "";
     els.trackNo.value = "";
+    if (els.compilation) els.compilation.checked = false;
     els.coverUrl.value = "";
     els.filename.textContent = `${paths.length} files selected`;
     setCoverSrc("");
+    clearMetaCoverSearch();
     els.modal.classList.remove("hidden");
   }
 
@@ -520,6 +770,7 @@
     bulkPaths = [];
     editMode = "single";
     setCoverSrc("");
+    clearMetaCoverSearch();
   }
 
   async function saveTags() {
@@ -532,8 +783,10 @@
       path: selectedPath,
       title: els.title.value,
       artists: els.artists.value,
+      album_artist: els.albumArtist?.value || "",
       album: els.album.value,
       track_number: els.trackNo.value,
+      compilation: !!els.compilation?.checked,
       cover_url: els.coverUrl.value.trim() || null,
       remove_cover: false,
     };
@@ -558,17 +811,21 @@
       paths: bulkPaths,
       title: null,
       artists: els.artists.value.trim() || null,
+      album_artist: els.albumArtist?.value.trim() || null,
       album: els.album.value.trim() || null,
       track_number: sequential ? null : els.trackNo.value.trim() || null,
       number_sequentially: sequential,
+      compilation: compilationTouched ? !!els.compilation?.checked : null,
       cover_url: els.coverUrl.value.trim() || null,
       remove_cover: false,
     };
     if (
       !body.artists &&
+      !body.album_artist &&
       !body.album &&
       !body.track_number &&
       !body.number_sequentially &&
+      body.compilation === null &&
       !body.cover_url
     ) {
       alert("Enter at least one field to apply, or set a cover URL.");
@@ -627,8 +884,10 @@
         path: selectedPath,
         title: els.title.value,
         artists: els.artists.value,
+        album_artist: els.albumArtist?.value || "",
         album: els.album.value,
         track_number: els.trackNo.value,
+        compilation: !!els.compilation?.checked,
         remove_cover: true,
       }),
     });
@@ -692,6 +951,30 @@
     await refresh();
   }
 
+  function scheduleSearch(value) {
+    searchQuery = value;
+    if (els.btnSearchClear) els.btnSearchClear.disabled = !value.trim();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      render().catch(() => {});
+    }, value.trim() ? 280 : 0);
+  }
+
+  els.search?.addEventListener("input", () => {
+    scheduleSearch(els.search.value || "");
+  });
+  els.search?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      clearSearch();
+      render().catch(() => {});
+    }
+  });
+  els.btnSearchClear?.addEventListener("click", () => {
+    clearSearch();
+    render().catch(() => {});
+  });
+
   els.btnNew.addEventListener("click", createFolder);
   els.btnCollapse.addEventListener("click", async () => {
     expanded.clear();
@@ -732,6 +1015,9 @@
     if (selectedPath) deleteEntry(selectedPath);
   });
   els.btnCoverClear.addEventListener("click", clearCover);
+  els.btnCoverSearch?.addEventListener("click", () => {
+    runMetaCoverSearch();
+  });
   els.coverFile.addEventListener("change", () => {
     const file = els.coverFile.files && els.coverFile.files[0];
     uploadCover(file);
@@ -739,6 +1025,9 @@
   });
   els.numberSeq?.addEventListener("change", () => {
     if (els.trackNo) els.trackNo.disabled = !!els.numberSeq.checked;
+  });
+  els.compilation?.addEventListener("change", () => {
+    compilationTouched = true;
   });
 
   els.btnNameCancel?.addEventListener("click", () => closeNameModal(null));

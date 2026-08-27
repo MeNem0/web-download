@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
-from mutagen.id3 import APIC, ID3, TALB, TPE1, TIT2, TRCK, ID3NoHeaderError
+from mutagen.id3 import APIC, ID3, TALB, TCMP, TPE1, TPE2, TIT2, TRCK, ID3NoHeaderError
+
+# Album artist used to group multi-artist compilations under one folder/album.
+VARIOUS_ARTISTS = "Various Artists"
 
 
 def _text_frame(tags: ID3, key: str) -> str:
@@ -26,7 +29,9 @@ def read_track_metadata(mp3_path: Path) -> dict[str, Any]:
         "title": mp3_path.stem,
         "artists": "",
         "album": "",
+        "album_artist": "",
         "track_number": "",
+        "compilation": False,
         "has_cover": False,
     }
     if not mp3_path.exists():
@@ -41,12 +46,15 @@ def read_track_metadata(mp3_path: Path) -> dict[str, Any]:
     title = _text_frame(tags, "TIT2")
     artists = _text_frame(tags, "TPE1")
     album = _text_frame(tags, "TALB")
+    album_artist = _text_frame(tags, "TPE2")
     track = _text_frame(tags, "TRCK")
     if title:
         result["title"] = title
     result["artists"] = artists
     result["album"] = album
+    result["album_artist"] = album_artist
     result["track_number"] = track.split("/", 1)[0].strip() if track else ""
+    result["compilation"] = _text_frame(tags, "TCMP") in {"1", "true", "True"}
     result["has_cover"] = bool(tags.getall("APIC"))
     return result
 
@@ -97,8 +105,12 @@ def apply_track_metadata(
     title: str,
     artists: str,
     album: str = "",
+    album_artist: str = "",
     track_number: int | None = None,
+    compilation: bool = False,
     cover_urls: Iterable[str | None] | None = None,
+    cover_bytes: bytes | None = None,
+    cover_mime: str | None = None,
 ) -> None:
     try:
         tags = ID3(mp3_path)
@@ -109,10 +121,32 @@ def apply_track_metadata(
     tags.add(TPE1(encoding=3, text=artists))
     if album:
         tags.add(TALB(encoding=3, text=album))
+    # Always write album artist when tagging downloads so YouTube/uploader
+    # TPE2 values from yt-dlp do not stick around. Fall back to artists,
+    # except on compilations where every track keeps its own artist.
+    album_artist_value = (album_artist or "").strip()
+    if not album_artist_value:
+        album_artist_value = VARIOUS_ARTISTS if compilation else (artists or "").strip()
+    if album_artist_value:
+        tags.add(TPE2(encoding=3, text=album_artist_value))
+    else:
+        tags.delall("TPE2")
     if track_number is not None:
         tags.add(TRCK(encoding=3, text=str(track_number)))
+    # TCMP is what Jellyfin/Plex/iTunes read to keep a multi-artist album whole.
+    if compilation:
+        tags.add(TCMP(encoding=3, text="1"))
+    else:
+        tags.delall("TCMP")
 
-    cover = _fetch_cover(cover_urls or [])
+    cover: tuple[bytes, str] | None = None
+    if cover_bytes:
+        mime = (cover_mime or "image/jpeg").split(";", 1)[0]
+        if mime not in {"image/jpeg", "image/png", "image/webp"}:
+            mime = "image/jpeg"
+        cover = (cover_bytes, mime)
+    else:
+        cover = _fetch_cover(cover_urls or [])
     if cover:
         data, mime = cover
         tags.delall("APIC")
@@ -127,7 +161,9 @@ def update_track_metadata(
     title: str | None = None,
     artists: str | None = None,
     album: str | None = None,
+    album_artist: str | None = None,
     track_number: str | int | None = None,
+    compilation: bool | None = None,
     cover_urls: Iterable[str | None] | None = None,
     cover_bytes: bytes | None = None,
     cover_mime: str | None = None,
@@ -148,12 +184,22 @@ def update_track_metadata(
             tags.add(TALB(encoding=3, text=album.strip()))
         else:
             tags.delall("TALB")
+    if album_artist is not None:
+        if album_artist.strip():
+            tags.add(TPE2(encoding=3, text=album_artist.strip()))
+        else:
+            tags.delall("TPE2")
     if track_number is not None:
         text = str(track_number).strip()
         if text:
             tags.add(TRCK(encoding=3, text=text))
         else:
             tags.delall("TRCK")
+    if compilation is not None:
+        if compilation:
+            tags.add(TCMP(encoding=3, text="1"))
+        else:
+            tags.delall("TCMP")
 
     if remove_cover:
         tags.delall("APIC")
