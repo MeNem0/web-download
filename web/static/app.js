@@ -549,10 +549,25 @@
     }).join("");
     els.trackList.innerHTML = html;
 
-    const active = els.trackList.querySelector(".track.active");
-    if (active) {
-      active.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    keepActiveTrackVisible();
+  }
+
+  // Follow the song being downloaded inside the list's own scroll box.
+  // scrollIntoView would also scroll every ancestor, which yanked the whole
+  // page down to the song list each time a track finished.
+  function keepActiveTrackVisible() {
+    const list = els.trackList;
+    const active = list?.querySelector(".track.active");
+    if (!active) return;
+    const listBox = list.getBoundingClientRect();
+    const trackBox = active.getBoundingClientRect();
+    let delta = 0;
+    if (trackBox.top < listBox.top) {
+      delta = trackBox.top - listBox.top;
+    } else if (trackBox.bottom > listBox.bottom) {
+      delta = trackBox.bottom - listBox.bottom;
     }
+    if (delta) list.scrollTo({ top: list.scrollTop + delta, behavior: "smooth" });
   }
 
   async function skipQueuedTrack(trackIndex) {
