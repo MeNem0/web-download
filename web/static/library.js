@@ -49,6 +49,13 @@
 
   if (!els.list) return;
 
+  const LIB_ICON = {
+    folder:
+      '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4.6c0-.7.58-1.3 1.3-1.3h2.75l1.1 1.3h5.55c.72 0 1.3.58 1.3 1.3v5.7c0 .72-.58 1.3-1.3 1.3H3.3c-.72 0-1.3-.58-1.3-1.3V4.6Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+    file:
+      '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="5.1" cy="12" r="1.9" stroke="currentColor" stroke-width="1.3"/><path d="M7 12V3.6L12.4 2.4v7.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  };
+
   let rootPath = "";
   let libPath = "";
   let selectedPath = "";
@@ -398,7 +405,7 @@
         <div class="lib-item is-folder">
           <span class="lib-twist" aria-hidden="true"></span>
           <div class="lib-body" data-enter="${escapeHtml(folder.path)}" role="button" tabindex="0">
-            <span class="lib-badge folder">Folder</span>
+            <span class="lib-badge folder">${LIB_ICON.folder}<span class="sr-only">Folder</span></span>
             <div class="lib-copy">
               <div class="lib-name">${escapeHtml(folder.name)}</div>
               <div class="lib-sub">${escapeHtml(rel)}</div>
@@ -423,7 +430,7 @@
             <input type="checkbox" data-select="${escapeHtml(file.path)}"${checked} />
           </label>
           <div class="lib-body" data-edit="${escapeHtml(file.path)}" role="button" tabindex="0">
-            <span class="lib-badge file">MP3</span>
+            <span class="lib-badge file">${LIB_ICON.file}<span class="sr-only">MP3</span></span>
             <div class="lib-copy">
               <div class="lib-name">${escapeHtml(file.title || file.name)}</div>
               <div class="lib-sub">${escapeHtml(sub)}</div>
@@ -505,7 +512,7 @@
             <span class="lib-chevron ${open ? "is-open" : ""}"></span>
           </button>
           <div class="lib-body" data-enter="${escapeHtml(folder.path)}" role="button" tabindex="0">
-            <span class="lib-badge folder">Folder</span>
+            <span class="lib-badge folder">${LIB_ICON.folder}<span class="sr-only">Folder</span></span>
             <div class="lib-copy">
               <div class="lib-name">${escapeHtml(folder.name)}</div>
               <div class="lib-sub">Tap to open · chevron to expand</div>
@@ -530,7 +537,7 @@
             <input type="checkbox" data-select="${escapeHtml(file.path)}"${checked} />
           </label>
           <div class="lib-body" data-edit="${escapeHtml(file.path)}" role="button" tabindex="0">
-            <span class="lib-badge file">MP3</span>
+            <span class="lib-badge file">${LIB_ICON.file}<span class="sr-only">MP3</span></span>
             <div class="lib-copy">
               <div class="lib-name">${escapeHtml(file.title || file.name)}</div>
               <div class="lib-sub">${escapeHtml(sub)}</div>
@@ -543,6 +550,53 @@
           </div>
         </div>
       </div>`;
+  }
+
+  // Expanding/collapsing a folder used to re-render the whole tree from the
+  // root down — every already-open sibling got rebuilt too, just to touch
+  // one node. This patches only the toggled node's own children in place,
+  // so opening a folder costs one (often cached) fetch and one small DOM
+  // update instead of a full-tree rebuild.
+  async function toggleFolder(path, node) {
+    const item = node.querySelector(":scope > .lib-item");
+    const twist = item?.querySelector("[data-toggle]");
+    const chevron = twist?.querySelector(".lib-chevron");
+    const depth = Number(node.style.getPropertyValue("--d")) || 0;
+    let childrenEl = node.querySelector(":scope > .lib-children");
+
+    if (expanded.has(path)) {
+      expanded.delete(path);
+      twist?.setAttribute("aria-label", "Expand");
+      chevron?.classList.remove("is-open");
+      node.setAttribute("aria-expanded", "false");
+      childrenEl?.remove();
+      return;
+    }
+
+    expanded.add(path);
+    twist?.setAttribute("aria-label", "Collapse");
+    chevron?.classList.add("is-open");
+    node.setAttribute("aria-expanded", "true");
+
+    if (!childrenEl) {
+      childrenEl = document.createElement("div");
+      childrenEl.className = "lib-children";
+      node.appendChild(childrenEl);
+    }
+    childrenEl.innerHTML = `<div class="lib-empty is-loading" style="--d:${depth + 1}">Loading…</div>`;
+
+    try {
+      const data = await fetchListing(path);
+      const bits = [];
+      for (const sub of data.folders || []) bits.push(await renderFolder(sub, depth + 1));
+      for (const file of data.files || []) bits.push(renderFile(file, depth + 1));
+      childrenEl.innerHTML = bits.length
+        ? bits.join("")
+        : `<div class="lib-empty" style="--d:${depth + 1}">Empty folder</div>`;
+      bindTreeEvents(childrenEl);
+    } catch (err) {
+      childrenEl.innerHTML = `<div class="lib-empty" style="--d:${depth + 1}">${escapeHtml(err.message || "Error")}</div>`;
+    }
   }
 
   function bindActivate(el, handler) {
@@ -564,9 +618,8 @@
       btn.addEventListener("click", async (ev) => {
         ev.stopPropagation();
         const path = btn.getAttribute("data-toggle");
-        if (expanded.has(path)) expanded.delete(path);
-        else expanded.add(path);
-        await render();
+        const node = btn.closest(".lib-node");
+        if (node) await toggleFolder(path, node);
       });
     });
     root.querySelectorAll("[data-enter]").forEach((el) => {

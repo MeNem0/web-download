@@ -39,10 +39,12 @@
     jobCoverFile: $("job-cover-file"),
     jobCoverUrl: $("job-cover-url"),
     btnJobCoverClear: $("btn-job-cover-clear"),
-    coverSearchQ: $("cover-search-q"),
-    btnCoverSearch: $("btn-cover-search"),
-    coverSearchStatus: $("cover-search-status"),
-    coverSearchResults: $("cover-search-results"),
+    artistList: $("artist-list"),
+    albumSuggestPanel: $("album-suggest"),
+    albumSuggestList: $("album-suggest-list"),
+    albumSuggestStatus: $("album-suggest-status"),
+    albumMatchSpinner: $("album-match-spinner"),
+    albumMatchHint: $("album-match-hint"),
     btnNewArtist: $("btn-new-artist"),
     limit: $("limit"),
     stripTerms: $("strip-terms"),
@@ -110,6 +112,12 @@
   let lastDownloadBusy = false;
   let kickTimer = null;
 
+  // The exact catalog release the user picked from the album matcher, if any.
+  // Kept only while the Album field still matches what was picked — editing
+  // it afterwards means the pick no longer applies, so it's cleared.
+  let selectedCollectionId = null;
+  let selectedCollectionLabel = "";
+
   els.log?.addEventListener("scroll", () => {
     const nearBottom =
       els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 40;
@@ -139,19 +147,6 @@
     return releaseType() === "compilation";
   }
 
-  // The folder is only created once the job is queued, so offer the choice
-  // without leaving an empty "Various Artists" directory behind.
-  function ensureVariousArtistsOption() {
-    if (!els.artist) return;
-    const exists = [...els.artist.options].some((o) => o.value === VARIOUS_ARTISTS);
-    if (!exists) {
-      const opt = document.createElement("option");
-      opt.value = VARIOUS_ARTISTS;
-      opt.textContent = `${VARIOUS_ARTISTS} (new)`;
-      els.artist.appendChild(opt);
-    }
-  }
-
   function applyReleaseType() {
     const compilation = isCompilation();
     if (els.albumLabel) {
@@ -165,7 +160,6 @@
     // Online artist matching only has an effect when artists vary per track.
     els.verifyArtistsWrap?.classList.toggle("hidden", !compilation);
     if (compilation) {
-      ensureVariousArtistsOption();
       if (!els.artist.value) els.artist.value = VARIOUS_ARTISTS;
       autoFillAlbumArtist(els.artist.value || VARIOUS_ARTISTS);
     } else if (els.albumArtist?.value.trim() === VARIOUS_ARTISTS && !albumArtistTouched) {
@@ -229,167 +223,225 @@
     setCoverPreview("");
   }
 
-  function setCoverSearchStatus(message, { error = false, ok = false } = {}) {
-    const el = els.coverSearchStatus;
+  // ---- Album matcher, integrated directly into the Album/Artist fields ----
+  // Typing an album (optionally with an artist) live-searches the same
+  // catalog the review step uses, so picking a hit fills album, artist,
+  // album artist, and cover art together — and hands the review step the
+  // exact release id instead of making it re-guess from typed text.
+
+  function setAlbumSuggestStatus(message, { error = false } = {}) {
+    const el = els.albumSuggestStatus;
     if (!el) return;
     if (!message) {
       el.textContent = "";
       el.classList.add("hidden");
-      el.classList.remove("is-error", "is-ok");
+      el.classList.remove("is-error");
       return;
     }
     el.textContent = message;
     el.classList.toggle("is-error", !!error);
-    el.classList.toggle("is-ok", !!ok && !error);
     el.classList.remove("hidden");
   }
 
-  function clearCoverSearchResults() {
-    if (els.coverSearchResults) {
-      els.coverSearchResults.innerHTML = "";
-      els.coverSearchResults.classList.add("hidden");
+  function setAlbumMatchHint(text) {
+    if (!els.albumMatchHint) return;
+    if (!text) {
+      els.albumMatchHint.classList.add("hidden");
+      els.albumMatchHint.textContent = "";
+      return;
     }
-    setCoverSearchStatus("");
+    els.albumMatchHint.textContent = text;
+    els.albumMatchHint.classList.remove("hidden");
   }
 
-  function coverSearchQuery() {
-    const typed = (els.coverSearchQ?.value || "").trim();
-    if (typed) return typed;
-    // "Various Artists" is a folder name, not a searchable performer.
+  function closeAlbumSuggest() {
+    els.albumSuggestPanel?.classList.add("hidden");
+    els.album?.setAttribute("aria-expanded", "false");
+  }
+
+  function openAlbumSuggest() {
+    els.albumSuggestPanel?.classList.remove("hidden");
+    els.album?.setAttribute("aria-expanded", "true");
+  }
+
+  function clearAlbumSuggest() {
+    if (els.albumSuggestList) els.albumSuggestList.innerHTML = "";
+    setAlbumSuggestStatus("");
+    closeAlbumSuggest();
+  }
+
+  function forgetSelectedCollection() {
+    selectedCollectionId = null;
+    selectedCollectionLabel = "";
+    setAlbumMatchHint("");
+  }
+
+  function albumMatchQuery() {
     const artist = isCompilation() ? "" : els.artist?.value.trim() || "";
     const album = els.album?.value.trim() || "";
     return [artist, album].filter(Boolean).join(" ").trim();
   }
 
-  function renderCoverHits(results, { onPick } = {}) {
-    const list = els.coverSearchResults;
+  // Normalizes hits from either endpoint into one shape the dropdown renders.
+  function renderAlbumSuggestHits(hits, { onPick } = {}) {
+    const list = els.albumSuggestList;
     if (!list) return;
     list.innerHTML = "";
-    if (!results.length) {
-      list.classList.add("hidden");
-      return;
-    }
-    for (const hit of results) {
+    for (const hit of hits) {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "cover-hit";
+      btn.className = "suggest-hit";
       btn.setAttribute("role", "option");
       const kindLabel = hit.kind === "song" ? "Single" : "Album";
-      const bits = [hit.artist, hit.year, kindLabel].filter(Boolean);
+      const bits = [hit.artist, hit.year, kindLabel];
+      if (hit.track_count) bits.push(`${hit.track_count} tracks`);
+      if (hit.various_artists) bits.push("Various artists");
       const art = String(hit.artwork_url || "").replaceAll('"', "&quot;");
       btn.innerHTML = `
-        <img class="cover-hit-art" alt="" loading="lazy" src="${art}" />
-        <span class="cover-hit-body">
-          <span class="cover-hit-title">${escapeHtml(hit.album || hit.title || "")}</span>
-          <span class="cover-hit-meta">${escapeHtml(bits.join(" · "))}</span>
+        <span class="suggest-art">${
+          art ? `<img alt="" loading="lazy" src="${art}" />` : ""
+        }</span>
+        <span class="suggest-body">
+          <span class="suggest-title">${escapeHtml(hit.title || "")}</span>
+          <span class="suggest-meta">${escapeHtml(bits.filter(Boolean).join(" · "))}</span>
         </span>
       `;
       btn.addEventListener("click", () => onPick?.(hit));
       li.appendChild(btn);
       list.appendChild(li);
     }
-    list.classList.remove("hidden");
+    openAlbumSuggest();
   }
 
-  async function applyCoverSearchHit(hit) {
+  async function applyAlbumSuggestHit(hit) {
     if (!hit) return;
-    if (hit.album && els.album) {
-      els.album.value = hit.album;
+    if (hit.title && els.album) {
+      els.album.value = hit.title;
       updatePathPreview();
     }
-    // Picking a different release must refresh the album artist, not keep the
-    // previous album's value.
-    if (hit.artist) autoFillAlbumArtist(hit.artist);
-    // A compilation is an explicit choice, so picking cover art must not
-    // silently downgrade it to a normal album or single.
-    if (isCompilation()) {
-      // leave the release type alone
-    } else if (hit.kind === "song") {
-      const single = document.querySelector('input[name="release-type"][value="single"]');
-      if (single) {
-        single.checked = true;
-        single.dispatchEvent(new Event("change", { bubbles: true }));
+    // A compilation is an explicit choice, so a pick must not silently
+    // downgrade it to a normal album — but the catalog crediting it to
+    // "Various Artists" should switch a plain Album pick into one.
+    if (hit.various_artists) {
+      const radio = document.querySelector('input[name="release-type"][value="compilation"]');
+      if (radio && !radio.checked) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event("change", { bubbles: true }));
       }
-    } else if (hit.kind === "album") {
-      const albumRadio = document.querySelector('input[name="release-type"][value="album"]');
-      if (albumRadio) {
-        albumRadio.checked = true;
-        albumRadio.dispatchEvent(new Event("change", { bubbles: true }));
+      els.artist.value = VARIOUS_ARTISTS;
+    } else if (!isCompilation() && hit.artist) {
+      els.artist.value = hit.artist;
+      if (hit.kind === "song") {
+        const single = document.querySelector('input[name="release-type"][value="single"]');
+        if (single && !single.checked) {
+          single.checked = true;
+          single.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      } else if (hit.kind === "album") {
+        const albumRadio = document.querySelector('input[name="release-type"][value="album"]');
+        if (albumRadio && !albumRadio.checked) {
+          albumRadio.checked = true;
+          albumRadio.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       }
     }
+    if (hit.artist) autoFillAlbumArtist(hit.various_artists ? VARIOUS_ARTISTS : hit.artist);
     if (els.jobCoverUrl && hit.artwork_url) {
       els.jobCoverUrl.value = hit.artwork_url;
       await previewCoverUrl();
     }
-    // Collapse the result list so it doesn't dominate the form after a pick.
-    if (els.coverSearchResults) {
-      els.coverSearchResults.innerHTML = "";
-      els.coverSearchResults.classList.add("hidden");
+    // Only a real catalog album (not a bare song hit) carries an id the
+    // review step can match a tracklist against.
+    if (hit.isAlbum && hit.id) {
+      selectedCollectionId = hit.id;
+      selectedCollectionLabel = hit.title;
+      setAlbumMatchHint(`Catalog match locked · reviewing will compare against “${hit.title}”`);
+    } else {
+      forgetSelectedCollection();
     }
-    setCoverSearchStatus(`Cover set · ${hit.album || hit.title}`, { ok: true });
+    clearAlbumSuggest();
+    updatePathPreview();
     updateActionButtons({ downloading: lastDownloadBusy });
   }
 
-  async function runCoverSearch() {
-    const q = coverSearchQuery();
+  let albumMatchSeq = 0;
+  let albumMatchTimer = null;
+
+  async function runAlbumMatchSearch() {
+    const q = albumMatchQuery();
     if (q.length < 2) {
-      setCoverSearchStatus("Type an album or single name (or pick artist + album).", {
-        error: true,
-      });
+      clearAlbumSuggest();
       return;
     }
-    if (els.coverSearchQ && !els.coverSearchQ.value.trim()) {
-      els.coverSearchQ.value = q;
-    }
-    const entity = releaseType() === "single" ? "song" : "album";
-    if (els.btnCoverSearch) els.btnCoverSearch.disabled = true;
-    setCoverSearchStatus("Searching…");
+    const seq = ++albumMatchSeq;
+    const single = releaseType() === "single";
+    els.albumMatchSpinner?.removeAttribute("hidden");
     try {
-      let res = await fetch(
-        `/api/download/cover/search?q=${encodeURIComponent(q)}&entity=${encodeURIComponent(entity)}&limit=10`
-      );
-      let data = await res.json().catch(() => ({}));
-      let results = res.ok ? data.results || [] : [];
-      // If the selected release type finds nothing, try the other kind once.
-      if (res.ok && !results.length) {
-        const fallback = entity === "album" ? "song" : "album";
-        res = await fetch(
-          `/api/download/cover/search?q=${encodeURIComponent(q)}&entity=${encodeURIComponent(fallback)}&limit=10`
+      let hits = [];
+      let failed = false;
+      if (single) {
+        const res = await fetch(
+          `/api/download/cover/search?q=${encodeURIComponent(q)}&entity=song&limit=8`
         );
-        data = await res.json().catch(() => ({}));
-        results = res.ok ? data.results || [] : [];
+        const data = await res.json().catch(() => ({}));
+        failed = !res.ok;
+        hits = res.ok
+          ? (data.results || []).map((r) => ({
+              id: r.id,
+              kind: r.kind,
+              title: r.album || r.title || "",
+              artist: r.artist || "",
+              year: r.year || "",
+              artwork_url: r.artwork_url || "",
+              isAlbum: false,
+            }))
+          : [];
+      } else {
+        const res = await fetch(`/api/album/search?q=${encodeURIComponent(q)}&limit=8`);
+        const data = await res.json().catch(() => ({}));
+        failed = !res.ok;
+        hits = res.ok
+          ? (data.results || []).map((r) => ({
+              id: r.id,
+              kind: "album",
+              title: r.name || "",
+              artist: r.artist || "",
+              year: r.year || "",
+              artwork_url: r.artwork_url || "",
+              track_count: r.track_count || 0,
+              various_artists: !!r.various_artists,
+              isAlbum: true,
+            }))
+          : [];
       }
-      if (!res.ok) {
-        if (els.coverSearchResults) {
-          els.coverSearchResults.innerHTML = "";
-          els.coverSearchResults.classList.add("hidden");
-        }
-        const detail = typeof data.detail === "string" ? data.detail : "Search failed";
-        setCoverSearchStatus(detail, { error: true });
+      if (seq !== albumMatchSeq) return; // a newer keystroke already moved on
+      if (failed) {
+        setAlbumSuggestStatus("Catalog search failed.", { error: true });
+        if (els.albumSuggestList) els.albumSuggestList.innerHTML = "";
+        openAlbumSuggest();
         return;
       }
-      if (!results.length) {
-        if (els.coverSearchResults) {
-          els.coverSearchResults.innerHTML = "";
-          els.coverSearchResults.classList.add("hidden");
-        }
-        setCoverSearchStatus("No matches. Try a different spelling.", { error: true });
+      if (!hits.length) {
+        setAlbumSuggestStatus("No catalog matches — keep your own typed title.");
+        if (els.albumSuggestList) els.albumSuggestList.innerHTML = "";
+        openAlbumSuggest();
         return;
       }
-      setCoverSearchStatus(
-        `${results.length} result${results.length === 1 ? "" : "s"} — pick one to fill cover`
-      );
-      renderCoverHits(results, { onPick: applyCoverSearchHit });
+      setAlbumSuggestStatus("");
+      renderAlbumSuggestHits(hits, { onPick: applyAlbumSuggestHit });
     } catch (err) {
-      if (els.coverSearchResults) {
-        els.coverSearchResults.innerHTML = "";
-        els.coverSearchResults.classList.add("hidden");
-      }
-      setCoverSearchStatus(err.message || "Search failed", { error: true });
+      if (seq !== albumMatchSeq) return;
+      setAlbumSuggestStatus(err.message || "Catalog search failed.", { error: true });
+      openAlbumSuggest();
     } finally {
-      if (els.btnCoverSearch) els.btnCoverSearch.disabled = false;
+      if (seq === albumMatchSeq) els.albumMatchSpinner?.setAttribute("hidden", "");
     }
+  }
+
+  function scheduleAlbumMatchSearch(delay = 320) {
+    clearTimeout(albumMatchTimer);
+    albumMatchTimer = setTimeout(runAlbumMatchSearch, delay);
   }
 
   function assignCoverFileInput(file) {
@@ -439,22 +491,14 @@
     const res = await fetch("/api/library/artists");
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || "Could not load artists");
-    const current = selectName || els.artist.value;
-    const options = ['<option value="">Select artist…</option>'];
-    for (const a of data.artists || []) {
-      const sel = a.name === current ? " selected" : "";
-      options.push(
-        `<option value="${escapeHtml(a.name)}"${sel}>${escapeHtml(a.name)}</option>`,
-      );
+    if (els.artistList) {
+      const options = [`<option value="${escapeHtml(VARIOUS_ARTISTS)}"></option>`];
+      for (const a of data.artists || []) {
+        options.push(`<option value="${escapeHtml(a.name)}"></option>`);
+      }
+      els.artistList.innerHTML = options.join("");
     }
-    els.artist.innerHTML = options.join("");
-    if (isCompilation()) ensureVariousArtistsOption();
-    const known = [...els.artist.options].some((o) => o.value === current);
-    if (current && !known) {
-      els.artist.value = "";
-    } else if (current) {
-      els.artist.value = current;
-    }
+    if (selectName) els.artist.value = selectName;
     updatePathPreview();
   }
 
@@ -502,8 +546,6 @@
       els.btnNewArtist,
       els.jobCoverFile,
       els.jobCoverUrl,
-      els.coverSearchQ,
-      els.btnCoverSearch,
     ].forEach((el) => {
       if (el) el.disabled = false;
     });
@@ -1199,7 +1241,6 @@
         }
         // Filing a catalogued compilation under one performer's folder is the
         // exact problem this feature exists to solve, so move it.
-        ensureVariousArtistsOption();
         if (els.artist && els.artist.value !== VARIOUS_ARTISTS) {
           els.artist.value = VARIOUS_ARTISTS;
           updatePathPreview();
@@ -1302,7 +1343,9 @@
     if (els.reviewAlbumQ) els.reviewAlbumQ.value = body.album || "";
     if (els.reviewAlbumResults) els.reviewAlbumResults.classList.add("hidden");
     els.reviewModal?.classList.remove("hidden");
-    await loadReview();
+    // A field-level catalog pick is an exact release, not a name to re-guess —
+    // hand its id straight to the matcher instead of fuzzy-searching again.
+    await loadReview({ collectionId: selectedCollectionId || "" });
   }
 
   async function searchReviewAlbum() {
@@ -1591,23 +1634,71 @@
   }
 
   els.url.addEventListener("input", () => updateActionButtons({ downloading: lastDownloadBusy }));
-  els.artist.addEventListener("change", () => {
+  els.artist.addEventListener("input", () => {
     if (!els.albumArtist.value.trim()) {
       els.albumArtist.placeholder = els.artist.value || "Defaults to artist";
     }
     updatePathPreview();
     updateActionButtons({ downloading: lastDownloadBusy });
+    scheduleAlbumMatchSearch();
   });
   els.album.addEventListener("input", () => {
     updatePathPreview();
     updateActionButtons({ downloading: lastDownloadBusy });
+    // A locked catalog pick only applies to the album text it was made for;
+    // any further edit means the user is no longer asking for that release.
+    if (selectedCollectionId && els.album.value.trim() !== selectedCollectionLabel) {
+      forgetSelectedCollection();
+    }
+    scheduleAlbumMatchSearch();
+  });
+  els.album.addEventListener("focus", () => {
+    if (els.albumSuggestList?.children.length) openAlbumSuggest();
+  });
+  els.album.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      closeAlbumSuggest();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      clearTimeout(albumMatchTimer);
+      runAlbumMatchSearch();
+    } else if (ev.key === "ArrowDown") {
+      const first = els.albumSuggestList?.querySelector(".suggest-hit");
+      if (first) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+  });
+  els.albumSuggestList?.addEventListener("keydown", (ev) => {
+    const items = [...els.albumSuggestList.querySelectorAll(".suggest-hit")];
+    const i = items.indexOf(document.activeElement);
+    if (ev.key === "ArrowDown" && i < items.length - 1) {
+      ev.preventDefault();
+      items[i + 1].focus();
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (i > 0) items[i - 1].focus();
+      else els.album.focus();
+    } else if (ev.key === "Escape") {
+      closeAlbumSuggest();
+      els.album.focus();
+    }
+  });
+  document.addEventListener("click", (ev) => {
+    if (!els.albumSuggestPanel || els.albumSuggestPanel.classList.contains("hidden")) return;
+    const field = $("album-field");
+    if (field && !field.contains(ev.target)) closeAlbumSuggest();
   });
   els.albumArtist?.addEventListener("input", () => {
     albumArtistTouched = !!els.albumArtist.value.trim();
     updatePathPreview();
   });
   document.querySelectorAll('input[name="release-type"]').forEach((el) => {
-    el.addEventListener("change", applyReleaseType);
+    el.addEventListener("change", () => {
+      applyReleaseType();
+      forgetSelectedCollection();
+    });
   });
 
   els.metadata.addEventListener("change", () => {
@@ -1653,15 +1744,6 @@
     }, 450);
   });
   els.btnJobCoverClear?.addEventListener("click", clearJobCover);
-  els.btnCoverSearch?.addEventListener("click", () => {
-    runCoverSearch();
-  });
-  els.coverSearchQ?.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") {
-      ev.preventDefault();
-      runCoverSearch();
-    }
-  });
 
   els.jobCoverTile?.addEventListener("click", () => {
     els.jobCoverTile.focus();

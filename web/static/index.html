@@ -19,7 +19,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=33" />
+  <link rel="stylesheet" href="/static/style.css?v=35" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -70,18 +70,24 @@
         <div class="form-row">
           <label class="field grow">
             <span>Artist</span>
-            <select id="artist">
-              <option value="">Select artist…</option>
-            </select>
+            <input
+              id="artist"
+              type="text"
+              list="artist-list"
+              placeholder="Type or pick an artist…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <datalist id="artist-list"></datalist>
           </label>
-          <button id="btn-new-artist" class="btn ghost form-side-btn" type="button">New</button>
+          <button id="btn-new-artist" class="btn ghost form-side-btn" type="button" title="Pre-create an empty artist folder">New folder</button>
         </div>
 
         <div class="release-type" role="group" aria-label="Release type">
-          <label class="seg"><input type="radio" name="release-type" value="album" checked /> Album</label>
-          <label class="seg"><input type="radio" name="release-type" value="single" /> Single</label>
+          <label class="seg"><input type="radio" name="release-type" value="album" checked /><span>Album</span></label>
+          <label class="seg"><input type="radio" name="release-type" value="single" /><span>Single</span></label>
           <label class="seg"
-            ><input type="radio" name="release-type" value="compilation" /> Various artists</label
+            ><input type="radio" name="release-type" value="compilation" /><span>Various artists</span></label
           >
         </div>
         <p id="release-hint" class="field-hint" hidden>
@@ -90,33 +96,35 @@
         </p>
 
         <div class="form-row two">
-          <label class="field">
-            <span id="album-label">Album name</span>
-            <input id="album" type="text" placeholder="Album or single title" autocomplete="off" />
-          </label>
+          <div class="field combo" id="album-field">
+            <label for="album">
+              <span id="album-label">Album name</span>
+            </label>
+            <div class="combo-input">
+              <input
+                id="album"
+                type="text"
+                placeholder="Type to match the catalog…"
+                autocomplete="off"
+                spellcheck="false"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="album-suggest-list"
+                aria-autocomplete="list"
+              />
+              <span class="combo-spinner" id="album-match-spinner" hidden aria-hidden="true"></span>
+            </div>
+            <div class="suggest-panel hidden" id="album-suggest" aria-label="Catalog matches">
+              <p id="album-suggest-status" class="suggest-status hidden"></p>
+              <ul id="album-suggest-list" class="suggest-list" role="listbox"></ul>
+            </div>
+          </div>
           <label class="field">
             <span>Album artist</span>
             <input id="album-artist" type="text" placeholder="Defaults to artist" autocomplete="off" />
           </label>
         </div>
-
-        <div class="cover-search" id="cover-search">
-          <div class="form-row">
-            <label class="field grow">
-              <span>Find album / single cover</span>
-              <input
-                id="cover-search-q"
-                type="search"
-                placeholder="Search Apple Music…"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
-            <button id="btn-cover-search" class="btn ghost form-side-btn" type="button">Search</button>
-          </div>
-          <p id="cover-search-status" class="cover-search-status hidden"></p>
-          <ul id="cover-search-results" class="cover-search-results hidden" role="listbox" aria-label="Search results"></ul>
-        </div>
+        <p id="album-match-hint" class="field-hint match-hint hidden"></p>
 
         <div class="cover-row" id="job-cover-row">
           <div
@@ -269,12 +277,16 @@
           <button id="btn-lib-search-clear" class="btn ghost" type="button" disabled>Clear</button>
         </div>
         <div class="lib-toolbar">
-          <button id="btn-lib-new" class="btn ghost" type="button">New folder</button>
-          <button id="btn-lib-collapse" class="btn ghost" type="button">Collapse all</button>
-          <button id="btn-lib-refresh" class="btn ghost" type="button">Refresh</button>
-          <button id="btn-lib-select-all" class="btn ghost" type="button">Select all</button>
-          <button id="btn-lib-edit-selected" class="btn solid" type="button" disabled>Edit selected</button>
-          <button id="btn-lib-clear-selected" class="btn ghost" type="button" disabled>Clear</button>
+          <div class="lib-toolbar-group">
+            <button id="btn-lib-new" class="btn ghost quiet" type="button">New folder</button>
+            <button id="btn-lib-collapse" class="btn ghost quiet" type="button">Collapse all</button>
+            <button id="btn-lib-refresh" class="btn ghost quiet" type="button">Refresh</button>
+          </div>
+          <div class="lib-toolbar-group">
+            <button id="btn-lib-select-all" class="btn ghost quiet" type="button">Select all</button>
+            <button id="btn-lib-clear-selected" class="btn ghost quiet" type="button" disabled>Clear</button>
+            <button id="btn-lib-edit-selected" class="btn solid" type="button" disabled>Edit selected</button>
+          </div>
         </div>
         <div id="lib-list" class="lib-tree" role="tree">
           <p class="track-empty">Loading library…</p>
@@ -503,7 +515,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=33"></script>
-  <script src="/static/library.js?v=33"></script>
+  <script src="/static/app.js?v=35"></script>
+  <script src="/static/library.js?v=35"></script>
 </body>
 </html>

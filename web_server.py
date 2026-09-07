@@ -203,6 +203,11 @@ def _queue_view(item: dict[str, Any]) -> dict[str, Any]:
 class JobState:
     running: bool = False
     remediating: bool = False
+    # True once the current job has reached a terminal state (done, failed,
+    # or cancelled) and been filed into history — the "current job" card
+    # should disappear at that point rather than keep showing a finished job
+    # that already appears in Recent.
+    job_finished: bool = False
     status: str = "Ready"
     percent: int = 0
     progress: float = 0.0
@@ -239,6 +244,7 @@ class JobState:
 
     def reset_job(self, *, url: str, output_dir: str, options: dict[str, Any] | None = None) -> None:
         self.running = True
+        self.job_finished = False
         # Do not clear remediating / open_fixes — fixes run independently of the queue.
         self.cancel_flag = False
         self.status = "Starting…"
@@ -372,6 +378,10 @@ class JobState:
 
     def _current_summary(self) -> dict[str, Any] | None:
         if not self.job_id and not self.running and not self.url:
+            return None
+        # A finished job already sits in history — don't also leave it
+        # parked in the "current job" slot once nothing is actively running.
+        if self.job_finished and not self.running and not self.remediating:
             return None
         label = " / ".join(p for p in (self.artist, self.album) if p) or self.collection or self.url
         return {
@@ -1442,7 +1452,9 @@ async def mkdir(body: MkdirRequest) -> dict[str, Any]:
 
 @app.get("/api/library")
 async def library_list(path: str | None = None) -> dict[str, Any]:
-    return list_library_entries(path)
+    # Reads one ID3 tag per track in the folder; off the event loop so a big
+    # folder can't stall the download progress stream for other clients.
+    return await asyncio.to_thread(list_library_entries, path)
 
 
 @app.get("/api/library/search")
@@ -1452,7 +1464,8 @@ async def library_search(
     limit: int = 200,
 ) -> dict[str, Any]:
     capped = max(1, min(int(limit or 200), 500))
-    return search_library(q, path, limit=capped)
+    # Walks up to 8,000 files reading tags — same reasoning as library_list.
+    return await asyncio.to_thread(search_library, q, path, limit=capped)
 
 
 @app.get("/api/library/artists")
@@ -2075,6 +2088,7 @@ async def album_search(q: str = "", limit: int = 8) -> dict[str, Any]:
                 "year": a.year,
                 "artwork_url": a.artwork_url,
                 "track_count": a.track_count,
+                "various_artists": a.is_various_artists,
             }
             for a in found
         ],
@@ -2376,6 +2390,9 @@ def _run_download(
             summary["percent"] = job.percent
             summary["status_text"] = job.status
             job.history.appendleft(summary)
+            # Filed into history now — the queue's "current job" card should
+            # clear rather than keep showing this finished job.
+            job.job_finished = True
             job.bump()
         if n_open:
             job.append_log(f"{n_open} track(s) left in Failed panel to fix anytime.")
