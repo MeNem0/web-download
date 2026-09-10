@@ -254,6 +254,7 @@ body {
 }
 
 .release-type {
+  position: relative;
   display: flex;
   gap: 3px;
   margin-top: 10px;
@@ -264,7 +265,28 @@ body {
   padding: 3px;
 }
 
+/* The one moving piece: a pill that slides/resizes to sit behind whichever
+   segment is checked, instead of each segment flipping its own background. */
+.seg-indicator {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 0;
+  border-radius: 6px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.32s var(--ease), width 0.32s var(--ease);
+  will-change: transform;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.seg-indicator.no-anim { transition: none; }
+
 .seg {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: grid;
   place-items: center;
@@ -275,33 +297,32 @@ body {
   font-weight: 600;
   color: var(--muted);
   user-select: none;
-  transition: background 0.16s var(--ease), color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+  transition: color 0.2s var(--ease);
 }
 
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .seg:hover { color: var(--ink); }
 .seg:has(input:checked) {
-  background: var(--surface-solid);
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
 }
 .seg:has(input:focus-visible) {
   outline: 2px solid var(--accent-soft);
   outline-offset: 1px;
+  border-radius: 6px;
 }
 
 .cover-row {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 10px;
-  margin-top: 8px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 16px;
   align-items: start;
 }
 
 .job-cover-tile {
   position: relative;
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
   border-radius: 10px;
   border: 1px solid var(--line);
   transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
@@ -349,14 +370,42 @@ body {
 
 .cover-fields {
   display: grid;
+  gap: 6px;
+  min-width: 0;
+  /* Optically align the "Cover art" label with the tile's own top edge. */
+  padding-top: 3px;
+}
+
+.cover-fields-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.cover-fields-row {
+  display: flex;
   gap: 8px;
+}
+
+.cover-fields-row input {
+  flex: 1;
   min-width: 0;
 }
 
-.cover-fields .file-btn,
-.cover-fields .btn.tiny {
-  justify-self: start;
-  min-height: 40px;
+/* Square, icon-only twins for upload/clear so they read as one balanced
+   control alongside the URL field instead of two mismatched buttons
+   stacked above and below it. */
+.icon-btn {
+  flex-shrink: 0;
+  width: 42px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* ---- Album field combobox: live catalog matching --------------------- */
@@ -734,6 +783,27 @@ body {
   gap: 12px;
   align-items: start;
   padding: 4px 2px 2px;
+}
+
+.setup-warning {
+  margin: 0 0 2px;
+  padding: 11px 14px;
+  border: 1px solid var(--danger-line);
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.setup-warning strong { color: inherit; }
+
+.setup-warning code {
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 0.82em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 
 .top-main { min-width: 0; flex: 1; }
@@ -2060,6 +2130,24 @@ select:disabled {
 .meta-seq {
   margin: 4px 0 0;
   font-size: 0.9rem;
+}
+
+.meta-replace {
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-2);
+  display: grid;
+  gap: 8px;
+}
+
+.meta-replace .field-hint {
+  margin: 0;
+}
+
+.meta-replace .cover-fields-row .btn.solid {
+  flex-shrink: 0;
 }
 
 #name-modal {

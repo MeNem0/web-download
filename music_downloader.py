@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from collections.abc import Callable
@@ -1788,6 +1790,71 @@ def remediate_track(
         cover_bytes=cover_bytes,
         cover_mime=cover_mime,
     )
+
+
+def replace_track_source(
+    target_mp3: Path,
+    youtube_url: str,
+    *,
+    browser: str | None = None,
+    debug: bool = False,
+    callbacks: DownloadCallbacks | None = None,
+) -> TrackDownloadResult:
+    """Swap a library track's audio for a pasted YouTube video, in place.
+
+    Used to fix a wrong or low-quality match after the fact without losing
+    the tags already on the file (the caller re-applies them — this only
+    replaces the audio). Downloads into an isolated temp folder rather than
+    ``target_mp3``'s own directory: the download's computed filename comes
+    from a throwaway title, not the file's real name, so it must never be
+    confused with a sibling track when a name collision is possible.
+    """
+    if not YOUTUBE_VIDEO_RE.search(youtube_url or ""):
+        emit("Error: that does not look like a YouTube video URL.", callbacks, stderr=True)
+        return TrackDownloadResult("failed", "Invalid YouTube URL")
+
+    prepared = _prepare_download_runtime(browser=browser, debug=debug, callbacks=callbacks)
+    if isinstance(prepared, int):
+        return TrackDownloadResult("failed", "Download environment not ready")
+    ffmpeg, search_opts, cookie_session, ytdlp_logger = prepared
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="md-replace-"))
+    try:
+        placeholder = Track(
+            index=1,
+            title="replacement audio",
+            artists="",
+            duration_ms=0,
+            source=SourceType.YOUTUBE_VIDEO,
+            youtube_url=youtube_url.strip(),
+        )
+        result = download_single_track(
+            placeholder,
+            output_dir=tmp_dir,
+            cookie_session=cookie_session,
+            search_opts=search_opts,
+            ffmpeg=ffmpeg,
+            keep_original=False,
+            skip_existing=False,
+            embed_metadata=False,
+            debug=debug,
+            callbacks=callbacks,
+            ytdlp_logger=ytdlp_logger,
+            duration_tolerance=None,
+        )
+        if result.status != "done":
+            return result
+
+        produced = next(tmp_dir.glob("*.mp3"), None)
+        if not produced:
+            return TrackDownloadResult("failed", "Download did not produce an MP3")
+
+        target_mp3.parent.mkdir(parents=True, exist_ok=True)
+        produced.replace(target_mp3)
+        emit(f"Replaced audio: {target_mp3.name}", callbacks)
+        return TrackDownloadResult("done", target_mp3.name)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def main() -> int:

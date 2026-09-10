@@ -38,6 +38,11 @@
     btnCoverSearch: $("btn-meta-cover-search"),
     coverSearchStatus: $("meta-cover-search-status"),
     coverSearchResults: $("meta-cover-search-results"),
+    btnReplaceToggle: $("btn-meta-replace-toggle"),
+    replacePanel: $("meta-replace-panel"),
+    replaceUrl: $("meta-replace-url"),
+    btnReplaceGo: $("btn-meta-replace-go"),
+    replaceStatus: $("meta-replace-status"),
     nameModal: $("name-modal"),
     nameTitle: $("name-modal-title"),
     nameDetail: $("name-modal-detail"),
@@ -735,6 +740,26 @@
     await refresh();
   }
 
+  function setReplaceStatus(message, { error = false } = {}) {
+    const el = els.replaceStatus;
+    if (!el) return;
+    if (!message) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      el.classList.remove("is-error");
+      return;
+    }
+    el.textContent = message;
+    el.classList.toggle("is-error", !!error);
+    el.classList.remove("hidden");
+  }
+
+  function closeReplacePanel() {
+    els.replacePanel?.classList.add("hidden");
+    if (els.replaceUrl) els.replaceUrl.value = "";
+    setReplaceStatus("");
+  }
+
   function setEditorMode(mode, count) {
     editMode = mode;
     const bulk = mode === "bulk";
@@ -743,6 +768,9 @@
     els.titleField?.classList.toggle("hidden", bulk);
     els.btnRename?.classList.toggle("hidden", bulk);
     els.btnDelete?.classList.toggle("hidden", bulk);
+    // Replacing audio only makes sense for one file at a time.
+    els.btnReplaceToggle?.classList.toggle("hidden", bulk);
+    closeReplacePanel();
     if (els.metaTitle) {
       els.metaTitle.textContent = bulk ? `Edit ${count} tracks` : "Edit track";
     }
@@ -824,6 +852,7 @@
     editMode = "single";
     setCoverSrc("");
     clearMetaCoverSearch();
+    closeReplacePanel();
   }
 
   async function saveTags() {
@@ -1004,6 +1033,40 @@
     await refresh();
   }
 
+  async function replaceAudio() {
+    if (editMode === "bulk" || !selectedPath) return;
+    const url = (els.replaceUrl?.value || "").trim();
+    if (!url) {
+      setReplaceStatus("Paste a YouTube video URL first.", { error: true });
+      return;
+    }
+    const busy = [els.btnReplaceGo, els.btnSave, els.btnRename, els.btnDelete];
+    busy.forEach((btn) => { if (btn) btn.disabled = true; });
+    setReplaceStatus("Downloading and swapping the audio… this can take a minute.");
+    try {
+      const res = await fetch("/api/library/replace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selectedPath, youtube_url: url }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setReplaceStatus(data.detail || "Could not replace audio", { error: true });
+        return;
+      }
+      setReplaceStatus("Done — audio replaced, tags kept.");
+      if (els.replaceUrl) els.replaceUrl.value = "";
+      if (data.has_cover) {
+        setCoverSrc(`/api/library/cover?path=${encodeURIComponent(selectedPath)}&t=${Date.now()}`);
+      }
+      await refresh();
+    } catch (err) {
+      setReplaceStatus(err.message || "Could not replace audio", { error: true });
+    } finally {
+      busy.forEach((btn) => { if (btn) btn.disabled = false; });
+    }
+  }
+
   function scheduleSearch(value) {
     searchQuery = value;
     if (els.btnSearchClear) els.btnSearchClear.disabled = !value.trim();
@@ -1081,6 +1144,24 @@
   });
   els.compilation?.addEventListener("change", () => {
     compilationTouched = true;
+  });
+  els.btnReplaceToggle?.addEventListener("click", () => {
+    const isHidden = els.replacePanel?.classList.contains("hidden");
+    if (isHidden) {
+      els.replacePanel?.classList.remove("hidden");
+      els.replaceUrl?.focus();
+    } else {
+      closeReplacePanel();
+    }
+  });
+  els.btnReplaceGo?.addEventListener("click", () => {
+    replaceAudio();
+  });
+  els.replaceUrl?.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      replaceAudio();
+    }
   });
 
   els.btnNameCancel?.addEventListener("click", () => closeNameModal(null));

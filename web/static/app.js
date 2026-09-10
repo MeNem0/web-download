@@ -32,6 +32,8 @@
     albumArtist: $("album-artist"),
     albumLabel: $("album-label"),
     releaseHint: $("release-hint"),
+    releaseGroup: document.querySelector(".release-type"),
+    releaseIndicator: $("release-indicator"),
     pathPreview: $("path-preview"),
     jobCoverRow: $("job-cover-row"),
     jobCoverTile: $("job-cover-tile"),
@@ -100,6 +102,7 @@
     queueCurrent: $("queue-current"),
     log: $("log"),
     meta: $("meta"),
+    ffmpegWarning: $("ffmpeg-warning"),
     ytdlpVersion: $("ytdlp-version"),
     btnYtdlpUpdate: $("btn-ytdlp-update"),
   };
@@ -147,6 +150,29 @@
     return releaseType() === "compilation";
   }
 
+  // The pill behind the checked release-type segment; sized/positioned in
+  // JS (rather than one CSS rule per segment) so it can genuinely slide and
+  // resize between segments of different widths instead of just swapping.
+  function positionReleaseIndicator({ animate = true } = {}) {
+    const group = els.releaseGroup;
+    const indicator = els.releaseIndicator;
+    if (!group || !indicator) return;
+    const checked = group.querySelector('input[name="release-type"]:checked');
+    const seg = checked?.closest(".seg");
+    if (!seg) return;
+    const groupRect = group.getBoundingClientRect();
+    const segRect = seg.getBoundingClientRect();
+    if (!animate) indicator.classList.add("no-anim");
+    indicator.style.width = `${segRect.width}px`;
+    indicator.style.transform = `translateX(${segRect.left - groupRect.left}px)`;
+    if (!animate) {
+      // Commit the jump before re-enabling the transition, so the next
+      // (real) change is the first thing that actually animates.
+      void indicator.offsetWidth;
+      indicator.classList.remove("no-anim");
+    }
+  }
+
   function applyReleaseType() {
     const compilation = isCompilation();
     if (els.albumLabel) {
@@ -165,6 +191,7 @@
     } else if (els.albumArtist?.value.trim() === VARIOUS_ARTISTS && !albumArtistTouched) {
       els.albumArtist.value = "";
     }
+    positionReleaseIndicator();
     updatePathPreview();
     updateActionButtons({ downloading: lastDownloadBusy });
   }
@@ -798,6 +825,10 @@
     if (s.host_download_dir) bits.push(`Host: ${s.host_download_dir}`);
     if (queued > 0) bits.push(`${queued} queued`);
     els.meta.textContent = bits.join(" · ");
+
+    // Docker always has ffmpeg; a bare "python web_server.py" run might not,
+    // and that failure otherwise only surfaces once a download is attempted.
+    els.ffmpegWarning?.classList.toggle("hidden", s.ffmpeg_available !== false);
 
     if (s.ytdlp_version && els.ytdlpVersion && !els.ytdlpVersion.classList.contains("is-busy")) {
       const methods = Array.isArray(s.download_methods) ? s.download_methods.length : 0;
@@ -1707,6 +1738,13 @@
 
   els.tracks?.addEventListener("input", updateTracksHint);
   updateTracksHint();
+
+  // Fonts/layout can still be settling on first paint, so snap the
+  // indicator into place a beat later rather than trusting the very first
+  // measurement — and keep it aligned if the window/font metrics change.
+  positionReleaseIndicator({ animate: false });
+  requestAnimationFrame(() => positionReleaseIndicator({ animate: false }));
+  window.addEventListener("resize", () => positionReleaseIndicator({ animate: false }));
 
   els.jobCoverFile?.addEventListener("change", () => {
     const file = els.jobCoverFile.files && els.jobCoverFile.files[0];

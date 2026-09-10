@@ -65,9 +65,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from download_playlist import download_strategies, ytdlp_version
+from download_playlist import download_strategies, find_ffmpeg, find_node, ytdlp_version
 from metadata_tags import (
     VARIOUS_ARTISTS,
+    apply_track_metadata,
     read_cover_bytes,
     read_track_metadata,
     update_track_metadata,
@@ -78,6 +79,7 @@ from music_downloader import (
     download_url,
     parse_track_selector,
     remediate_track,
+    replace_track_source,
     strategy_ladder,
 )
 
@@ -443,6 +445,10 @@ class JobState:
                 "playlist_track_numbers": bool(
                     self.options.get("playlist_track_numbers")
                 ),
+                # Checked once at process startup — included here (not just
+                # in /api/status) so the SSE stream carries it too, or the
+                # very next SSE tick would blank it out again in the UI.
+                "ffmpeg_available": ffmpeg_available,
                 "queue": [_queue_view(item) for item in self.pending],
                 "queue_length": len(self.pending),
                 "current": self._current_summary(),
@@ -705,6 +711,9 @@ default_output_dir = Path(
 last_output_dir = default_output_dir
 # Host path shown in the UI when running under Docker (from compose/.env).
 host_download_dir = os.environ.get("HOST_DOWNLOAD_DIR", "").strip()
+# Checked once at startup (not per-request): the Docker image always has
+# ffmpeg, so this only matters for a bare "python web_server.py" run.
+ffmpeg_available = bool(find_ffmpeg())
 job = JobState(output_dir=str(default_output_dir))
 
 app = FastAPI(title="Music Downloader", docs_url=None, redoc_url=None)
@@ -1785,6 +1794,61 @@ async def library_cover_upload(
     }
 
 
+class LibraryReplaceBody(BaseModel):
+    path: str
+    youtube_url: str = Field(min_length=1)
+    browser: str | None = None
+    debug: bool = False
+
+
+@app.post("/api/library/replace")
+async def library_replace_audio(body: LibraryReplaceBody) -> dict[str, Any]:
+    """Re-download a library track from a pasted YouTube link, in place.
+
+    The existing tags (and embedded cover) are read before the swap and
+    written straight back afterward, so a wrong or low-quality match can be
+    fixed without re-typing its title, artist, album, or cover.
+    """
+    target = _resolve_library_path(body.path, must_exist=True)
+    if not target.is_file() or target.suffix.lower() not in AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Not an MP3 file")
+
+    meta = read_track_metadata(target)
+    cover = read_cover_bytes(target)
+    browser = body.browser if body.browser and body.browser != "none" else None
+
+    def _run():
+        return replace_track_source(
+            target,
+            body.youtube_url,
+            browser=browser,
+            debug=body.debug,
+        )
+
+    result = await asyncio.to_thread(_run)
+    if result.status != "done":
+        raise HTTPException(status_code=400, detail=result.detail or "Could not replace audio")
+
+    apply_track_metadata(
+        target,
+        title=meta.get("title") or target.stem,
+        artists=meta.get("artists") or "",
+        album=meta.get("album") or "",
+        album_artist=meta.get("album_artist") or "",
+        track_number=meta.get("track_number") or None,
+        compilation=bool(meta.get("compilation")),
+        cover_bytes=cover[0] if cover else None,
+        cover_mime=cover[1] if cover else None,
+    )
+    updated = read_track_metadata(target)
+    return {
+        "path": str(target),
+        "name": target.name,
+        **updated,
+        "cover_url": f"/api/library/cover?path={quote(str(target))}" if updated.get("has_cover") else None,
+    }
+
+
 class LibraryPathBody(BaseModel):
     path: str
 
@@ -2576,6 +2640,23 @@ def main() -> None:
         print("  access:      Tailscale devices only (bound to tailnet IP)")
     else:
         print("  access:      local only until Tailscale IP is available")
+
+    # The Docker image installs ffmpeg/Node.js automatically; running outside
+    # it (the "Local (venv)" path) needs them on PATH, and a missing ffmpeg
+    # otherwise only surfaces once someone clicks download. Surface it now.
+    if not running_in_docker():
+        if ffmpeg_available:
+            print(f"  ffmpeg:      {find_ffmpeg()}")
+        else:
+            print(
+                "  ffmpeg:      NOT FOUND — downloads will fail until it's installed "
+                "(winget install Gyan.FFmpeg, then restart this server)"
+            )
+        if not find_node():
+            print(
+                "  node:        not found — optional, but some yt-dlp player clients "
+                "need it to bypass YouTube's JS challenge"
+            )
 
     uvicorn.run(app, host=host, port=port, log_level="info")
 

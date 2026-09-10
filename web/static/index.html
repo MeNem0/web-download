@@ -19,7 +19,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=35" />
+  <link rel="stylesheet" href="/static/style.css?v=39" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -61,6 +61,11 @@
         </div>
       </header>
 
+      <div id="ffmpeg-warning" class="setup-warning hidden" role="alert">
+        <strong>ffmpeg not found.</strong> Downloads will fail until it's installed — run
+        <code>winget install Gyan.FFmpeg</code> (or your OS's equivalent), then restart the server.
+      </div>
+
       <section class="panel form-panel">
         <label class="field">
           <span>Link</span>
@@ -84,6 +89,7 @@
         </div>
 
         <div class="release-type" role="group" aria-label="Release type">
+          <span class="seg-indicator" id="release-indicator" aria-hidden="true"></span>
           <label class="seg"><input type="radio" name="release-type" value="album" checked /><span>Album</span></label>
           <label class="seg"><input type="radio" name="release-type" value="single" /><span>Single</span></label>
           <label class="seg"
@@ -139,15 +145,19 @@
             <span class="job-cover-empty">Paste</span>
           </div>
           <div class="cover-fields">
-            <label class="btn ghost file-btn">
-              Cover image
-              <input id="job-cover-file" type="file" accept="image/*" hidden />
-            </label>
-            <label class="field tight">
-              <span>Cover URL</span>
-              <input id="job-cover-url" type="url" placeholder="https://…" />
-            </label>
-            <button id="btn-job-cover-clear" class="btn tiny" type="button">Clear cover</button>
+            <span class="cover-fields-label">Cover art</span>
+            <div class="cover-fields-row">
+              <input id="job-cover-url" type="url" placeholder="Paste an image URL, or drop one on the tile" />
+              <label class="btn ghost icon-btn" title="Upload an image">
+                <span class="sr-only">Upload cover image</span>
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 10.4V2.6M8 2.6 5.1 5.5M8 2.6l2.9 2.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 10.6v1.7c0 .6.5 1.1 1.1 1.1h7.8c.6 0 1.1-.5 1.1-1.1v-1.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <input id="job-cover-file" type="file" accept="image/*" hidden />
+              </label>
+              <button id="btn-job-cover-clear" class="btn ghost icon-btn" type="button" title="Remove cover">
+                <span class="sr-only">Remove cover</span>
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -384,10 +394,29 @@
             <span id="meta-compilation-label">Various artists compilation</span>
           </label>
         </div>
+
+        <div class="meta-replace hidden" id="meta-replace-panel">
+          <span class="cover-fields-label">Replace audio</span>
+          <p class="field-hint">
+            Paste a YouTube video URL to re-download this track. Title, artist, album,
+            and cover stay exactly as they are — only the audio changes.
+          </p>
+          <div class="cover-fields-row">
+            <input
+              id="meta-replace-url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
+              autocomplete="off"
+            />
+            <button id="btn-meta-replace-go" class="btn solid" type="button">Replace</button>
+          </div>
+          <p id="meta-replace-status" class="cover-search-status hidden"></p>
+        </div>
       </div>
 
       <footer class="meta-footer">
         <button id="btn-meta-save" class="btn solid" type="button">Save</button>
+        <button id="btn-meta-replace-toggle" class="btn ghost" type="button">Replace audio…</button>
         <button id="btn-meta-rename" class="btn ghost" type="button">Rename</button>
         <button id="btn-meta-delete" class="btn ghost danger" type="button">Delete</button>
       </footer>
@@ -515,7 +544,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=35"></script>
-  <script src="/static/library.js?v=35"></script>
+  <script src="/static/app.js?v=39"></script>
+  <script src="/static/library.js?v=39"></script>
 </body>
 </html>
