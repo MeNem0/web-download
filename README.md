@@ -46,11 +46,35 @@ python web_server.py
 
 The startup log (and the web UI itself) will flag it if ffmpeg isn't found.
 
-By default it binds to your Tailscale IP if `tailscale` is installed and
-running, otherwise `127.0.0.1` only. Override with `BIND_HOST` (e.g.
-`BIND_HOST=0.0.0.0` to reach it from other devices without Tailscale) and
-`PORT` if needed — see the top of [web_server.py](web_server.py) for the
-full list of env vars.
+### Settings (.env)
+
+Copy `.env.example` to `.env` and edit it — the local run reads it on
+startup, same file Docker Compose uses:
+
+```bash
+copy .env.example .env
+```
+
+The two you'll most likely want:
+
+```ini
+OUTPUT_DIR=D:\Music
+BIND_HOST=127.0.0.1
+```
+
+`OUTPUT_DIR` is where MP3s land (filed as `<OUTPUT_DIR>/<Artist>/<Album>/`);
+leave it unset for the `downloads` folder next to `web_server.py`. `BIND_HOST`
+defaults to your Tailscale IP when Tailscale is running, otherwise
+`127.0.0.1` — set it to `127.0.0.1` to always use `localhost:8787`, or
+`0.0.0.0` to reach it from other devices on your network.
+
+Real environment variables override the file, so a one-off still works:
+
+```powershell
+$env:OUTPUT_DIR = "E:\Temp"; python web_server.py
+```
+
+See the top of [web_server.py](web_server.py) for the full list.
 
 ## Push to GitHub
 

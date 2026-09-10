@@ -17,12 +17,14 @@ Docker:
 
     docker compose up -d --build
 
-Env vars:
+Env vars (also read from a .env file next to this script; real environment
+variables win over the file):
   PORT                      listen port (default 8787)
   BIND_HOST                 override bind address (default: auto Tailscale IP)
   ALLOW_LOCALHOST           allow 127.0.0.1 clients (default 1)
   REQUIRE_TAILSCALE_CLIENT  reject non-tailnet client IPs (default 1; 0 in Docker)
   OUTPUT_DIR                where MP3s are saved (default ./downloads)
+  BROWSE_ROOT               confine the library browser to this tree
 """
 
 from __future__ import annotations
@@ -89,6 +91,47 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web" / "static"
 TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 DEFAULT_PORT = 8787
+
+
+def _load_dotenv(path: Path) -> list[str]:
+    """Read KEY=VALUE lines from .env into the environment; return the keys set.
+
+    Docker Compose reads .env on its own, so this is what makes the same file
+    work for a plain ``python web_server.py`` run. Values already present in
+    the real environment win, so ``$env:OUTPUT_DIR=...`` still overrides.
+
+    Values are taken literally — no backslash escape processing — because
+    Windows paths (C:\\Users\\me\\New Music) are the main thing that lands here.
+    """
+    try:
+        # utf-8-sig: Notepad writes a BOM, which would otherwise glue itself to
+        # the first key and make that line silently do nothing.
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    loaded: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+        loaded.append(key)
+    return loaded
+
+
+dotenv_keys = _load_dotenv(ROOT / ".env")
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -2627,8 +2670,10 @@ def main() -> None:
     default_output_dir.mkdir(parents=True, exist_ok=True)
 
     print("Music Downloader web UI")
+    if dotenv_keys:
+        print(f"  .env:        loaded {', '.join(dotenv_keys)}")
     print(f"  bind:        http://{host}:{port}")
-    print(f"  output dir:  {default_output_dir} (overridable per download in the UI)")
+    print(f"  output dir:  {default_output_dir}")
     print(f"  localhost:   {'allowed' if allow_localhost else 'blocked'}")
     print(
         "  client ACL:  "
