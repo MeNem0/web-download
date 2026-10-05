@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#12161a" />
+  <meta name="theme-color" content="#0b0d10" />
   <title>Music Downloader</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/static/favicon.svg" />
@@ -14,63 +14,96 @@
         var saved = localStorage.getItem("md-theme");
         var theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
         document.documentElement.setAttribute("data-theme", theme);
+        var view = localStorage.getItem("md-view");
+        document.documentElement.setAttribute("data-view", view === "activity" || view === "library" ? view : "download");
       } catch (e) {
-        document.documentElement.setAttribute("data-theme", "light");
+        document.documentElement.setAttribute("data-theme", "dark");
+        document.documentElement.setAttribute("data-view", "download");
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=40" />
+  <link rel="stylesheet" href="/static/style.css?v=41" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </head>
 <body>
-  <div class="shell layout">
-    <aside class="fix-panel panel" aria-label="Failed tracks">
-      <div class="panel-head">
-        <h2>Failed</h2>
-        <span id="fix-summary" class="summary">None</span>
+  <header class="appbar">
+    <div class="appbar-inner">
+      <a class="brand" href="/" aria-label="Music Downloader">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="bm" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#3ddc97" />
+              <stop offset="1" stop-color="#36b8e0" />
+            </linearGradient>
+          </defs>
+          <rect width="32" height="32" rx="9" fill="url(#bm)" />
+          <path d="M16 8v11m0 0-4.5-4.5M16 19l4.5-4.5M9.5 23.5h13" fill="none" stroke="#06241a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="brand-name">Music Downloader</span>
+      </a>
+
+      <nav class="tabs tabs-top" aria-label="Sections">
+        <button type="button" class="tab" data-view-btn="download" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14" /></svg>
+          <span>Download</span>
+        </button>
+        <button type="button" class="tab tab-activity" data-view-btn="activity">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+          <span>Activity</span>
+          <i class="tab-badge" data-badge hidden></i>
+        </button>
+        <button type="button" class="tab" data-view-btn="library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm10-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+          <span>Library</span>
+        </button>
+      </nav>
+
+      <div class="appbar-tools">
+        <span id="ytdlp-version" class="engine-tag" title="Downloader engine version"></span>
+        <button
+          id="btn-ytdlp-update"
+          class="btn ghost small"
+          type="button"
+          title="Update yt-dlp — fixes most 'downloads stopped working' issues"
+        >Update engine</button>
+        <button id="btn-theme" class="btn ghost small" type="button" aria-label="Toggle dark mode">Dark</button>
       </div>
-      <p id="fix-hint" class="fix-hint">Failed songs stay here while the queue keeps going. Fixes use the original album folder and tags.</p>
-      <ul id="fix-list" class="fix-list">
-        <li class="track-empty">No failed tracks</li>
-      </ul>
-      <button id="btn-fix-continue" class="btn ghost fix-continue" type="button" disabled>
-        Skip all
-      </button>
-    </aside>
+    </div>
+  </header>
 
-    <div class="layout-main">
-      <header class="top">
-        <div class="top-main">
-          <h1>Music Downloader</h1>
-          <p class="lede">Artist → album folders. Queue multiple releases.</p>
-        </div>
-        <div class="top-aside">
-          <p id="meta" class="server-meta"></p>
-          <div class="top-tools">
-            <span id="ytdlp-version" class="engine-tag" title="Downloader engine version"></span>
-            <button
-              id="btn-ytdlp-update"
-              class="btn ghost theme-toggle"
-              type="button"
-              title="Update yt-dlp — fixes most 'downloads stopped working' issues"
-            >Update engine</button>
-            <button id="btn-theme" class="btn ghost theme-toggle" type="button" aria-label="Toggle dark mode">Dark</button>
-          </div>
-        </div>
-      </header>
+  <div id="ffmpeg-warning" class="setup-warning hidden" role="alert">
+    <strong>ffmpeg not found.</strong> Downloads will fail until it's installed — run
+    <code>winget install Gyan.FFmpeg</code> (or your OS's equivalent), then restart the server.
+  </div>
 
-      <div id="ffmpeg-warning" class="setup-warning hidden" role="alert">
-        <strong>ffmpeg not found.</strong> Downloads will fail until it's installed — run
-        <code>winget install Gyan.FFmpeg</code> (or your OS's equivalent), then restart the server.
-      </div>
-
+  <div class="workspace">
+    <!-- ============================ DOWNLOAD ============================ -->
+    <main class="view view-download" id="view-download">
       <section class="panel form-panel">
+        <div class="panel-head">
+          <h2>New download</h2>
+          <span id="meta" class="server-meta"></span>
+        </div>
+
         <label class="field">
           <span>Link</span>
-          <input id="url" type="url" placeholder="Spotify or YouTube URL" autocomplete="off" />
+          <input id="url" type="url" placeholder="Spotify or YouTube URL" autocomplete="off" inputmode="url" />
         </label>
+
+        <div class="release-type" role="group" aria-label="Release type">
+          <span class="seg-indicator" id="release-indicator" aria-hidden="true"></span>
+          <label class="seg"><input type="radio" name="release-type" value="album" checked /><span>Album</span></label>
+          <label class="seg"><input type="radio" name="release-type" value="single" /><span>Single</span></label>
+          <label class="seg"
+            ><input type="radio" name="release-type" value="compilation" /><span>Various artists</span></label
+          >
+        </div>
+        <p id="release-hint" class="field-hint" hidden>
+          Each song keeps its own artist tag; the album stays together under the album
+          artist folder.
+        </p>
 
         <div class="form-row">
           <div class="field grow combo" id="artist-field">
@@ -92,21 +125,11 @@
               <ul id="artist-suggest-list" class="suggest-list is-plain" role="listbox"></ul>
             </div>
           </div>
-          <button id="btn-new-artist" class="btn ghost form-side-btn" type="button" title="Pre-create an empty artist folder">New folder</button>
+          <button id="btn-new-artist" class="btn ghost form-side-btn" type="button" title="Pre-create an empty artist folder">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <span>New folder</span>
+          </button>
         </div>
-
-        <div class="release-type" role="group" aria-label="Release type">
-          <span class="seg-indicator" id="release-indicator" aria-hidden="true"></span>
-          <label class="seg"><input type="radio" name="release-type" value="album" checked /><span>Album</span></label>
-          <label class="seg"><input type="radio" name="release-type" value="single" /><span>Single</span></label>
-          <label class="seg"
-            ><input type="radio" name="release-type" value="compilation" /><span>Various artists</span></label
-          >
-        </div>
-        <p id="release-hint" class="field-hint" hidden>
-          Each song keeps its own artist tag; the album stays together under the album
-          artist folder.
-        </p>
 
         <div class="form-row two">
           <div class="field combo" id="album-field">
@@ -139,6 +162,21 @@
         </div>
         <p id="album-match-hint" class="field-hint match-hint hidden"></p>
 
+        <div class="playlist-find">
+          <button
+            id="btn-find-playlist"
+            class="btn ghost"
+            type="button"
+            disabled
+            title="Search YouTube for a playlist that matches this album's tracklist and fill in the link"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" /></svg>
+            <span>Find YouTube playlist</span>
+          </button>
+          <span id="playlist-find-status" class="cover-search-status hidden"></span>
+        </div>
+        <ul id="playlist-find-results" class="cover-search-results hidden" role="listbox"></ul>
+
         <div class="cover-row" id="job-cover-row">
           <div
             id="job-cover-tile"
@@ -154,7 +192,7 @@
           <div class="cover-fields">
             <span class="cover-fields-label">Cover art</span>
             <div class="cover-fields-row">
-              <input id="job-cover-url" type="url" placeholder="Paste an image URL, or drop one on the tile" />
+              <input id="job-cover-url" type="url" placeholder="Image URL, or drop one on the tile" />
               <label class="btn ghost icon-btn" title="Upload an image">
                 <span class="sr-only">Upload cover image</span>
                 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 10.4V2.6M8 2.6 5.1 5.5M8 2.6l2.9 2.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 10.6v1.7c0 .6.5 1.1 1.1 1.1h7.8c.6 0 1.1-.5 1.1-1.1v-1.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -171,7 +209,7 @@
         <p id="path-preview" class="path-preview">Choose artist and album</p>
 
         <details class="advanced">
-          <summary>Advanced</summary>
+          <summary>Advanced options</summary>
           <div class="options">
             <label class="field tracks-field">
               <span>Tracks</span>
@@ -204,7 +242,7 @@
             </label>
             <label class="field tight">
               <span>Limit (first N)</span>
-              <input id="limit" type="number" min="1" placeholder="All" />
+              <input id="limit" type="number" min="1" placeholder="All" inputmode="numeric" />
             </label>
             <label class="field tight">
               <span>Cookies</span>
@@ -217,33 +255,36 @@
               </select>
             </label>
             <div class="toggles">
-              <label class="toggle"><input id="force" type="checkbox" /> Force</label>
-              <label class="toggle"><input id="metadata" type="checkbox" checked /> Metadata</label>
+              <label class="toggle"><input id="force" type="checkbox" /> <span>Force</span></label>
+              <label class="toggle"><input id="metadata" type="checkbox" checked /> <span>Metadata</span></label>
               <label class="toggle" title="Write track # as 1, 2, 3… in playlist order">
-                <input id="playlist-numbers" type="checkbox" checked /> Playlist #s
+                <input id="playlist-numbers" type="checkbox" checked /> <span>Playlist #s</span>
               </label>
-              <label class="toggle"><input id="debug" type="checkbox" /> Debug</label>
+              <label class="toggle"><input id="debug" type="checkbox" /> <span>Debug</span></label>
               <label
                 class="toggle hidden"
                 id="verify-artists-wrap"
                 title="Look each song up on Apple Music to credit the real performer instead of the uploading channel"
               >
-                <input id="verify-artists" type="checkbox" checked /> Match artists online
+                <input id="verify-artists" type="checkbox" checked /> <span>Match artists online</span>
               </label>
             </div>
           </div>
         </details>
 
         <div class="actions">
-          <button id="btn-queue" class="btn ghost" type="button" title="Skip the review and queue the whole playlist">Queue as-is</button>
           <button id="btn-download" class="btn solid" type="button">Review &amp; queue</button>
+          <button id="btn-queue" class="btn ghost" type="button" title="Skip the review and queue the whole playlist">Queue as-is</button>
           <button id="btn-cancel" class="btn ghost" type="button" disabled>Cancel</button>
         </div>
       </section>
+    </main>
 
+    <!-- ============================ ACTIVITY ============================ -->
+    <aside class="view view-activity" id="view-activity" aria-label="Activity">
       <section class="panel progress-panel">
         <div class="progress-head">
-          <div>
+          <div class="progress-text">
             <p id="progress-label" class="progress-label">Idle</p>
             <p id="status" class="status">Paste a link and pick an artist</p>
           </div>
@@ -264,6 +305,37 @@
         </div>
       </section>
 
+      <aside class="fix-panel panel" aria-label="Failed tracks">
+        <div class="panel-head">
+          <h2>Needs attention</h2>
+          <span id="fix-summary" class="summary">None</span>
+        </div>
+        <p id="fix-hint" class="fix-hint">Failed songs stay here while the queue keeps going. Fixes use the original album folder and tags.</p>
+        <ul id="fix-list" class="fix-list">
+          <li class="track-empty">No failed tracks</li>
+        </ul>
+        <button id="btn-fix-continue" class="btn ghost fix-continue" type="button" disabled>
+          Skip all
+        </button>
+      </aside>
+
+      <aside class="queue-panel panel" aria-label="Download queue">
+        <div class="panel-head">
+          <h2>Queue</h2>
+        </div>
+        <div id="queue-current" class="queue-current">
+          <p class="track-empty">No active job</p>
+        </div>
+        <h3 class="queue-heading">Up next</h3>
+        <ul id="queue-list" class="queue-list">
+          <li class="track-empty">Queue is empty</li>
+        </ul>
+        <h3 class="queue-heading">Recent</h3>
+        <ul id="queue-history" class="queue-list muted">
+          <li class="track-empty">Nothing yet</li>
+        </ul>
+      </aside>
+
       <section class="panel tracks-panel">
         <div class="panel-head">
           <h2>Songs</h2>
@@ -274,6 +346,17 @@
         </ul>
       </section>
 
+      <details class="panel log-panel">
+        <summary>
+          <span>Raw log</span>
+          <button id="btn-clear" class="btn tiny" type="button">Clear</button>
+        </summary>
+        <pre id="log" class="log"></pre>
+      </details>
+    </aside>
+
+    <!-- ============================= LIBRARY ============================ -->
+    <section class="view view-library" id="view-library" aria-label="Library">
       <section class="panel library-panel">
         <div class="panel-head">
           <h2>Library</h2>
@@ -283,10 +366,11 @@
         <div class="lib-search-row">
           <label class="lib-search-field">
             <span class="sr-only">Search library</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.3-4.3M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" /></svg>
             <input
               id="lib-search"
               type="search"
-              placeholder="Search songs, artists, albums…"
+              placeholder="Search library…"
               autocomplete="off"
               spellcheck="false"
             />
@@ -310,34 +394,26 @@
           <p class="track-empty">Loading library…</p>
         </div>
       </section>
-
-      <details class="panel log-panel">
-        <summary>
-          <span>Raw log</span>
-          <button id="btn-clear" class="btn tiny" type="button">Clear</button>
-        </summary>
-        <pre id="log" class="log"></pre>
-      </details>
-    </div>
-
-    <aside class="queue-panel panel" aria-label="Download queue">
-      <div class="panel-head">
-        <h2>Queue</h2>
-      </div>
-      <div id="queue-current" class="queue-current">
-        <p class="track-empty">No active job</p>
-      </div>
-      <h3 class="queue-heading">Up next</h3>
-      <ul id="queue-list" class="queue-list">
-        <li class="track-empty">Queue is empty</li>
-      </ul>
-      <h3 class="queue-heading">Recent</h3>
-      <ul id="queue-history" class="queue-list muted">
-        <li class="track-empty">Nothing yet</li>
-      </ul>
-    </aside>
+    </section>
   </div>
 
+  <nav class="tabs tabs-bottom" aria-label="Sections">
+    <button type="button" class="tab" data-view-btn="download" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14" /></svg>
+      <span>Download</span>
+    </button>
+    <button type="button" class="tab tab-activity" data-view-btn="activity">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+      <span>Activity</span>
+      <i class="tab-badge" data-badge hidden></i>
+    </button>
+    <button type="button" class="tab" data-view-btn="library">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm10-2a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+      <span>Library</span>
+    </button>
+  </nav>
+
+  <!-- ============================== DIALOGS ============================== -->
   <div id="meta-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="meta-title">
     <div class="modal-card meta-card">
       <header class="meta-top">
@@ -346,18 +422,20 @@
           <p id="meta-filename" class="meta-filename"></p>
           <p id="meta-bulk-hint" class="meta-bulk-hint hidden">Blank fields are left unchanged on each file.</p>
         </div>
-        <button id="btn-meta-close" class="btn ghost meta-close" type="button" aria-label="Close">Close</button>
+        <button id="btn-meta-close" class="btn ghost small meta-close" type="button" aria-label="Close">Close</button>
       </header>
 
       <div class="meta-scroll">
         <div class="meta-cover-row">
           <img id="meta-cover" class="cover-img" alt="Cover art" />
           <div class="meta-cover-side">
-            <label class="btn ghost file-btn">
-              Upload image
-              <input id="meta-cover-file" type="file" accept="image/*" hidden />
-            </label>
-            <button id="btn-meta-cover-clear" class="btn ghost" type="button">Remove</button>
+            <div class="meta-cover-buttons">
+              <label class="btn ghost file-btn">
+                Upload image
+                <input id="meta-cover-file" type="file" accept="image/*" hidden />
+              </label>
+              <button id="btn-meta-cover-clear" class="btn ghost" type="button">Remove</button>
+            </div>
             <label class="field tight">
               <span>Cover URL</span>
               <input id="meta-cover-url" type="url" placeholder="https://…" />
@@ -395,7 +473,7 @@
           </div>
           <label class="toggle meta-seq hidden" id="meta-seq-wrap">
             <input id="meta-number-seq" type="checkbox" />
-            Number tracks in selection order (1, 2, 3…)
+            <span>Number tracks in selection order (1, 2, 3…)</span>
           </label>
           <label class="toggle meta-seq" id="meta-compilation-wrap">
             <input id="meta-compilation" type="checkbox" />
@@ -438,7 +516,7 @@
           <h2 id="review-title">Review album match</h2>
           <p id="review-sub" class="review-sub"></p>
         </div>
-        <button id="btn-review-close" class="btn tiny" type="button">Close</button>
+        <button id="btn-review-close" class="btn ghost small" type="button">Close</button>
       </header>
 
       <div class="review-album">
@@ -455,24 +533,24 @@
             id="review-album-q"
             type="search"
             class="review-search"
-            placeholder="Wrong album? search…"
+            placeholder="Wrong album? Search…"
             autocomplete="off"
           />
-          <button id="btn-review-album-search" class="btn tiny" type="button">Find</button>
+          <button id="btn-review-album-search" class="btn ghost small" type="button">Find</button>
         </div>
       </div>
       <ul id="review-album-results" class="cover-search-results hidden" role="listbox"></ul>
 
       <div class="review-filters">
         <label class="toggle"
-          ><input id="review-use-album-meta" type="checkbox" checked /> Use album metadata</label
+          ><input id="review-use-album-meta" type="checkbox" checked /> <span>Use album metadata</span></label
         >
         <span class="review-spacer"></span>
         <span class="review-picks">
-          <button id="btn-review-all" class="btn tiny" type="button" title="Every album track, searching for any the playlist is missing">Whole album</button>
-          <button id="btn-review-playlist" class="btn tiny" type="button" title="Everything the playlist actually contains">Playlist</button>
-          <button id="btn-review-matched" class="btn tiny" type="button">Matched</button>
-          <button id="btn-review-none" class="btn tiny" type="button">None</button>
+          <button id="btn-review-all" class="btn ghost small" type="button" title="Every album track, searching for any the playlist is missing">Whole album</button>
+          <button id="btn-review-playlist" class="btn ghost small" type="button" title="Everything the playlist actually contains">Playlist</button>
+          <button id="btn-review-matched" class="btn ghost small" type="button">Matched</button>
+          <button id="btn-review-none" class="btn ghost small" type="button">None</button>
         </span>
       </div>
 
@@ -507,7 +585,7 @@
     <div class="modal-card name-card">
       <div class="panel-head">
         <h2 id="name-modal-title">Rename</h2>
-        <button id="btn-name-cancel" class="btn tiny" type="button">Close</button>
+        <button id="btn-name-cancel" class="btn ghost small" type="button">Close</button>
       </div>
       <p id="name-modal-detail" class="browse-path"></p>
       <label class="field">
@@ -524,7 +602,7 @@
     <div class="modal-card remediate-card">
       <div class="panel-head">
         <h2 id="remediate-title">Paste YouTube URL</h2>
-        <button id="btn-remediate-close" class="btn tiny" type="button">Close</button>
+        <button id="btn-remediate-close" class="btn ghost small" type="button">Close</button>
       </div>
       <p id="remediate-track" class="browse-path"></p>
       <label class="field">
@@ -542,7 +620,7 @@
     <div class="modal-card remediate-card">
       <div class="panel-head">
         <h2 id="add-track-title">Add song</h2>
-        <button id="btn-add-track-close" class="btn tiny" type="button">Close</button>
+        <button id="btn-add-track-close" class="btn ghost small" type="button">Close</button>
       </div>
       <p id="add-track-album" class="browse-path"></p>
       <label class="field">
@@ -560,7 +638,7 @@
         </label>
         <label class="field tight">
           <span>Track #</span>
-          <input id="add-track-number" type="number" min="1" max="999" placeholder="Auto" />
+          <input id="add-track-number" type="number" min="1" max="999" placeholder="Auto" inputmode="numeric" />
         </label>
       </div>
       <p class="hint">
@@ -574,23 +652,8 @@
     </div>
   </div>
 
-  <div id="browse-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="browse-title">
-    <div class="modal-card">
-      <div class="panel-head">
-        <h2 id="browse-title">Choose folder</h2>
-        <button id="btn-browse-close" class="btn tiny" type="button">Close</button>
-      </div>
-      <p id="browse-path" class="browse-path"></p>
-      <div class="browse-actions">
-        <button id="btn-browse-up" class="btn ghost" type="button">Up</button>
-        <button id="btn-browse-new" class="btn ghost" type="button">New folder</button>
-        <button id="btn-browse-use" class="btn solid" type="button">Use this folder</button>
-      </div>
-      <ul id="browse-list" class="browse-list"></ul>
-    </div>
-  </div>
-
-  <script src="/static/app.js?v=40"></script>
-  <script src="/static/library.js?v=40"></script>
+  <script src="/static/app.js?v=41"></script>
+  <script src="/static/library.js?v=41"></script>
+  <script src="/static/ui.js?v=41"></script>
 </body>
 </html>

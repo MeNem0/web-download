@@ -2356,6 +2356,63 @@ async def album_search(q: str = "", limit: int = 8) -> dict[str, Any]:
     }
 
 
+class FindPlaylistRequest(BaseModel):
+    album: str = Field(default="", max_length=200)
+    artist: str = Field(default="", max_length=200)
+    collection_id: str = Field(default="", max_length=64)
+    release_type: str = "album"
+
+
+@app.post("/api/album/find-playlist")
+async def album_find_playlist(body: FindPlaylistRequest) -> dict[str, Any]:
+    """Find the YouTube playlist that best matches a catalogued album.
+
+    Resolves the album (an exact catalogue id when the user picked one, else
+    the best guess for the typed name) and scores each candidate playlist
+    against its official tracklist.
+    """
+    import album_match as matcher
+    import playlist_find
+
+    if not (body.album.strip() or body.collection_id.strip()):
+        raise HTTPException(status_code=400, detail="Enter an album name first")
+    various = (body.release_type or "").strip().lower() == "compilation"
+
+    try:
+        album = await asyncio.to_thread(
+            matcher.find_album,
+            body.album,
+            body.artist,
+            collection_id=body.collection_id.strip(),
+            various=various,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Album lookup failed: {exc}") from exc
+    if album is None or not album.tracks:
+        raise HTTPException(
+            status_code=404,
+            detail="Couldn't find that album in the catalogue, so there's no tracklist to match against",
+        )
+
+    try:
+        results = await asyncio.to_thread(playlist_find.find_playlists, album)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"YouTube search failed: {exc}") from exc
+
+    return {
+        "album": {
+            "id": album.id,
+            "name": album.name,
+            "artist": album.artist,
+            "year": album.year,
+            "artwork_url": album.artwork_url,
+            "track_count": album.track_count or len(album.tracks),
+            "various_artists": album.is_various_artists,
+        },
+        "results": results,
+    }
+
+
 @app.post("/api/download")
 async def start_download(body: DownloadRequest) -> dict[str, Any]:
     global last_output_dir

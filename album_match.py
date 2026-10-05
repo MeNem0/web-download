@@ -8,7 +8,8 @@ anything is downloaded, and supplies the real per-track artist for compilations.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -32,6 +33,9 @@ class AlbumTrack:
     title: str
     artist: str
     duration_ms: int = 0
+    # The same song's title in other regional catalogues (a Japanese release
+    # listed as "ハルジオン" there and "Harujion" here); matching tries them all.
+    alt_titles: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -115,7 +119,55 @@ def search_albums(query: str, *, limit: int = 8) -> list[AlbumRef]:
     return out
 
 
-def fetch_album(collection_id: str) -> AlbumRef | None:
+# Regional storefronts whose titles differ from the default (US) listing.
+ALT_STOREFRONTS = ("jp", "kr", "tw")
+
+
+def _storefront_titles(collection_id: str, country: str) -> dict[int, str]:
+    """Track number -> title as listed in ``country``'s catalogue; {} if absent."""
+    try:
+        payload = _get(
+            LOOKUP_URL,
+            {"id": collection_id, "entity": "song", "limit": MAX_ALBUM_TRACKS, "country": country},
+        )
+    except Exception:  # noqa: BLE001 - alternates are a bonus, never required
+        return {}
+    titles: dict[int, str] = {}
+    for item in payload.get("results") or []:
+        if item.get("wrapperType") == "track" or item.get("kind") == "song":
+            number = int(item.get("trackNumber") or 0)
+            title = str(item.get("trackName") or "").strip()
+            if number and title:
+                titles[number] = title
+    return titles
+
+
+def with_alternate_titles(album: AlbumRef) -> AlbumRef:
+    """Attach each track's titles from other regional catalogues.
+
+    Only a catalogue with the same number of tracks is used, so a differently
+    edited regional release can't attach the wrong song to a track.
+    """
+    if not album.tracks:
+        return album
+    with ThreadPoolExecutor(max_workers=len(ALT_STOREFRONTS)) as pool:
+        listings = list(pool.map(lambda c: _storefront_titles(album.id, c), ALT_STOREFRONTS))
+    listings = [titles for titles in listings if len(titles) == len(album.tracks)]
+    if not listings:
+        return album
+
+    tracks = []
+    for track in album.tracks:
+        alts: list[str] = []
+        for titles in listings:
+            alt = titles.get(track.number)
+            if alt and alt != track.title and alt not in alts:
+                alts.append(alt)
+        tracks.append(replace(track, alt_titles=tuple(alts)) if alts else track)
+    return replace(album, tracks=tuple(tracks))
+
+
+def fetch_album(collection_id: str, *, alternates: bool = True) -> AlbumRef | None:
     """Full album with its official tracklist."""
     ident = str(collection_id or "").strip()
     if not ident:
@@ -151,7 +203,7 @@ def fetch_album(collection_id: str) -> AlbumRef | None:
 
     header = header or {}
     tracks.sort(key=lambda t: t.number)
-    return AlbumRef(
+    album = AlbumRef(
         id=ident,
         name=str(header.get("collectionName") or "").strip(),
         artist=str(header.get("artistName") or "").strip(),
@@ -160,6 +212,7 @@ def fetch_album(collection_id: str) -> AlbumRef | None:
         track_count=int(header.get("trackCount") or len(tracks)),
         tracks=tuple(tracks),
     )
+    return with_alternate_titles(album) if alternates else album
 
 
 # Fetching a tracklist costs a request each, so only probe the top few.
@@ -271,11 +324,12 @@ def find_album(
 
     for candidate in ranked[:MAX_ALBUM_PROBES]:
         try:
-            found = fetch_album(candidate.id)
+            found = fetch_album(candidate.id, alternates=False)
         except Exception:  # noqa: BLE001 - try the next candidate
             continue
         if found and found.tracks:
-            return found
+            # Alternates cost extra requests, so only the winner gets them.
+            return with_alternate_titles(found)
     return None
 
 
@@ -284,7 +338,10 @@ def _pair_score(
     source_title: str,
     source_duration_ms: int,
 ) -> float:
-    score = title_similarity(album_track.title, source_title)
+    score = max(
+        title_similarity(title, source_title)
+        for title in (album_track.title, *album_track.alt_titles)
+    )
     if score < MIN_MATCH_SCORE:
         return 0.0
     if album_track.duration_ms and source_duration_ms:

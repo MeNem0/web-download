@@ -15,6 +15,8 @@ from difflib import SequenceMatcher
 
 import httpx
 
+from text_norm import romanize_variants
+
 SEARCH_URL = "https://itunes.apple.com/search"
 # iTunes throttles unauthenticated clients at roughly 20 calls/minute, so pace
 # requests instead of getting the whole playlist rate-limited part way through.
@@ -43,7 +45,7 @@ class ArtistMatch:
     score: float
 
 
-def _normalize(text: str) -> str:
+def _normalize_reading(text: str) -> str:
     out = (text or "").lower()
     out = _PAREN_RE.sub(" ", out)
     out = _FEAT_RE.sub(" ", out)
@@ -51,21 +53,52 @@ def _normalize(text: str) -> str:
     return _WS_RE.sub(" ", out).strip()
 
 
+def _normalize(text: str) -> str:
+    """Primary Latin reading of a title, lowercased with bracketed noise gone."""
+    return _normalize_reading(romanize_variants(text)[0])
+
+
+def _normalized_variants(text: str) -> tuple[str, ...]:
+    """Every Latin reading of a title (a Han-only title may be Chinese or Japanese)."""
+    out: list[str] = []
+    for reading in romanize_variants(text):
+        norm = _normalize_reading(reading)
+        if norm and norm not in out:
+            out.append(norm)
+    return tuple(out)
+
+
 def normalize_title(text: str) -> str:
     """Public alias so matching code shares one notion of title equality."""
     return _normalize(text)
 
 
-def _title_score(want: str, got: str) -> float:
-    a, b = _normalize(want), _normalize(got)
-    if not a or not b:
-        return 0.0
+def _pair_score(a: str, b: str, *, compact: bool) -> float:
     if a == b:
         return 1.0
     # A remix/edit is still the same song, so reward containment either way.
     if a in b or b in a:
         return 0.92
-    return SequenceMatcher(None, a, b).ratio()
+    score = SequenceMatcher(None, a, b).ratio()
+    if compact:
+        # Romanisations disagree on spacing ("yoruni kakeru" / "yoru ni kakeru").
+        ca, cb = a.replace(" ", ""), b.replace(" ", "")
+        if ca == cb:
+            return 0.97
+        score = max(score, SequenceMatcher(None, ca, cb).ratio())
+    return score
+
+
+def _title_score(want: str, got: str) -> float:
+    # Compare in Latin script so "夜に駆ける" can match "Yoru ni Kakeru"; the
+    # best pairing of readings counts. Plain English titles take the old path.
+    want, got = want or "", got or ""
+    compact = not (want.isascii() and got.isascii())
+    best = 0.0
+    for a in _normalized_variants(want):
+        for b in _normalized_variants(got):
+            best = max(best, _pair_score(a, b, compact=compact))
+    return best
 
 
 def title_similarity(want: str, got: str) -> float:

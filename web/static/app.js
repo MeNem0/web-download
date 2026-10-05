@@ -48,6 +48,9 @@
     albumSuggestStatus: $("album-suggest-status"),
     albumMatchSpinner: $("album-match-spinner"),
     albumMatchHint: $("album-match-hint"),
+    btnFindPlaylist: $("btn-find-playlist"),
+    playlistFindStatus: $("playlist-find-status"),
+    playlistFindResults: $("playlist-find-results"),
     btnNewArtist: $("btn-new-artist"),
     limit: $("limit"),
     stripTerms: $("strip-terms"),
@@ -590,7 +593,134 @@
     );
   }
 
+  // ---- Find a YouTube playlist for the album ---------------------------------
+  // Searches YouTube for playlists and scores each against the catalogued
+  // album's tracklist; picking one fills the link and locks the catalogue match.
+
+  let findingPlaylist = false;
+
+  function setPlaylistFindStatus(message, { error = false, ok = false } = {}) {
+    const el = els.playlistFindStatus;
+    if (!el) return;
+    if (!message) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      el.classList.remove("is-error", "is-ok");
+      return;
+    }
+    el.textContent = message;
+    el.classList.toggle("is-error", !!error);
+    el.classList.toggle("is-ok", !!ok);
+    el.classList.remove("hidden");
+  }
+
+  function clearPlaylistResults() {
+    if (!els.playlistFindResults) return;
+    els.playlistFindResults.innerHTML = "";
+    els.playlistFindResults.classList.add("hidden");
+  }
+
+  async function pickPlaylist(album, hit) {
+    clearPlaylistResults();
+    await applyAlbumSuggestHit({
+      id: album.id,
+      kind: "album",
+      title: album.name,
+      artist: album.artist,
+      year: album.year,
+      artwork_url: album.artwork_url,
+      track_count: album.track_count,
+      various_artists: album.various_artists,
+      isAlbum: true,
+    });
+    els.url.value = hit.url;
+    els.url.dispatchEvent(new Event("input", { bubbles: true }));
+    const gaps = hit.missing || hit.extra;
+    setPlaylistFindStatus(
+      `Link filled · ${hit.matched}/${hit.album_tracks} album songs found in “${hit.title}”` +
+        (gaps ? " — match or remove the gaps in the review step" : ""),
+      { ok: true }
+    );
+  }
+
+  function renderPlaylistResults(album, results) {
+    const list = els.playlistFindResults;
+    if (!list) return;
+    list.innerHTML = "";
+    const art = String(album.artwork_url || "").replaceAll('"', "&quot;");
+    results.forEach((hit, i) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cover-hit";
+      const bits = [
+        `${hit.matched}/${hit.album_tracks} songs match`,
+        hit.missing ? `${hit.missing} missing` : "",
+        hit.extra ? `${hit.extra} extra` : "",
+        hit.uploader,
+      ].filter(Boolean);
+      const best = i === 0 && hit.coverage >= 0.75;
+      if (hit.missing_titles?.length) {
+        const more = hit.missing > hit.missing_titles.length ? ", …" : "";
+        btn.title = `Not found in this playlist: ${hit.missing_titles.join(", ")}${more}`;
+      }
+      btn.innerHTML = `
+        <img class="cover-hit-art" alt="" loading="lazy" src="${art}" />
+        <span class="cover-hit-body">
+          <span class="cover-hit-title">${best ? '<span class="playlist-badge">Best match</span>' : ""}${escapeHtml(hit.title)}</span>
+          <span class="cover-hit-meta">${escapeHtml(bits.join(" · "))}</span>
+        </span>`;
+      btn.addEventListener("click", () => pickPlaylist(album, hit));
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+    list.classList.toggle("hidden", !results.length);
+  }
+
+  async function findPlaylist() {
+    if (findingPlaylist || !els.album?.value.trim()) return;
+    findingPlaylist = true;
+    clearPlaylistResults();
+    setPlaylistFindStatus("Looking up the album and searching YouTube…");
+    updateActionButtons({ downloading: lastDownloadBusy });
+    try {
+      const res = await fetch("/api/album/find-playlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          album: els.album.value.trim(),
+          artist: isCompilation() ? "" : els.artist?.value.trim() || "",
+          collection_id: selectedCollectionId || "",
+          release_type: releaseType(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Playlist search failed");
+      if (!data.results.length) {
+        setPlaylistFindStatus(
+          `No YouTube playlist lines up with “${data.album.name}” — paste a link yourself.`,
+          { error: true }
+        );
+        return;
+      }
+      setPlaylistFindStatus(
+        `${data.results.length} playlist${data.results.length === 1 ? "" : "s"} for “${data.album.name}” — ` +
+          "pick one; any missing songs can be matched or removed next"
+      );
+      renderPlaylistResults(data.album, data.results);
+    } catch (err) {
+      setPlaylistFindStatus(err.message || "Playlist search failed", { error: true });
+    } finally {
+      findingPlaylist = false;
+      updateActionButtons({ downloading: lastDownloadBusy });
+    }
+  }
+
   function updateActionButtons({ downloading = false } = {}) {
+    if (els.btnFindPlaylist) {
+      els.btnFindPlaylist.disabled = findingPlaylist || !els.album?.value.trim();
+      els.btnFindPlaylist.textContent = findingPlaylist ? "Searching…" : "Find YouTube playlist";
+    }
     const ready = formReady();
     const busySubmit = queueSubmitting;
     // Download/Queue stay available whenever the form is valid — a running
@@ -1808,6 +1938,7 @@
     const field = $("album-field");
     if (field && !field.contains(ev.target)) closeAlbumSuggest();
   });
+  els.btnFindPlaylist?.addEventListener("click", findPlaylist);
   els.albumArtist?.addEventListener("input", () => {
     albumArtistTouched = !!els.albumArtist.value.trim();
     updatePathPreview();
