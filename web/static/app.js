@@ -41,7 +41,8 @@
     jobCoverFile: $("job-cover-file"),
     jobCoverUrl: $("job-cover-url"),
     btnJobCoverClear: $("btn-job-cover-clear"),
-    artistList: $("artist-list"),
+    artistSuggestPanel: $("artist-suggest"),
+    artistSuggestList: $("artist-suggest-list"),
     albumSuggestPanel: $("album-suggest"),
     albumSuggestList: $("album-suggest-list"),
     albumSuggestStatus: $("album-suggest-status"),
@@ -514,19 +515,71 @@
     return null;
   }
 
+  // Known artist names for the suggestion dropdown below. Kept in memory and
+  // filtered client-side instead of a native <datalist>, whose popup position
+  // and styling the browser controls and can't be pinned under the field.
+  let knownArtists = [VARIOUS_ARTISTS];
+
   async function loadArtists(selectName) {
     const res = await fetch("/api/library/artists");
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || "Could not load artists");
-    if (els.artistList) {
-      const options = [`<option value="${escapeHtml(VARIOUS_ARTISTS)}"></option>`];
-      for (const a of data.artists || []) {
-        options.push(`<option value="${escapeHtml(a.name)}"></option>`);
-      }
-      els.artistList.innerHTML = options.join("");
-    }
+    knownArtists = [VARIOUS_ARTISTS, ...(data.artists || []).map((a) => a.name)];
     if (selectName) els.artist.value = selectName;
     updatePathPreview();
+  }
+
+  function closeArtistSuggest() {
+    els.artistSuggestPanel?.classList.add("hidden");
+    els.artist?.setAttribute("aria-expanded", "false");
+  }
+
+  function openArtistSuggest() {
+    if (!els.artistSuggestList?.children.length) return;
+    els.artistSuggestPanel?.classList.remove("hidden");
+    els.artist?.setAttribute("aria-expanded", "true");
+  }
+
+  function renderArtistSuggestHits(names) {
+    const list = els.artistSuggestList;
+    if (!list) return;
+    list.innerHTML = "";
+    for (const name of names) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "suggest-hit";
+      btn.setAttribute("role", "option");
+      btn.textContent = name;
+      btn.addEventListener("click", () => {
+        els.artist.value = name;
+        closeArtistSuggest();
+        els.artist.dispatchEvent(new Event("input", { bubbles: true }));
+        els.artist.focus();
+      });
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+    openArtistSuggest();
+  }
+
+  function filterArtistSuggest() {
+    const q = (els.artist?.value || "").trim().toLowerCase();
+    const pool = knownArtists.filter((name, i) => knownArtists.indexOf(name) === i);
+    const matches = q
+      ? pool.filter((name) => name.toLowerCase().includes(q))
+      : pool;
+    // Typed-prefix matches first, then the rest, each alphabetical.
+    matches.sort((a, b) => {
+      const pa = a.toLowerCase().startsWith(q) ? 0 : 1;
+      const pb = b.toLowerCase().startsWith(q) ? 0 : 1;
+      return pa - pb || a.localeCompare(b);
+    });
+    if (!matches.length) {
+      closeArtistSuggest();
+      return;
+    }
+    renderArtistSuggestHits(matches.slice(0, 50));
   }
 
   function formReady() {
@@ -1398,13 +1451,14 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "cover-hit";
+        const bits = [hit.artist, hit.year && String(hit.year)].filter(Boolean);
+        if (hit.track_count) bits.push(`${hit.track_count} tracks`);
+        const art = String(hit.artwork_url || "").replaceAll('"', "&quot;");
         btn.innerHTML = `
-          ${hit.artwork_url ? `<img src="${escapeHtml(hit.artwork_url)}" alt="" />` : ""}
-          <span class="cover-hit-text">
-            <strong>${escapeHtml(hit.name)}</strong>
-            <span>${escapeHtml(hit.artist)}${hit.year ? ` · ${hit.year}` : ""}${
-              hit.track_count ? ` · ${hit.track_count} tracks` : ""
-            }</span>
+          <img class="cover-hit-art" alt="" loading="lazy" src="${art}" />
+          <span class="cover-hit-body">
+            <span class="cover-hit-title">${escapeHtml(hit.name)}</span>
+            <span class="cover-hit-meta">${escapeHtml(bits.join(" · "))}</span>
           </span>`;
         btn.addEventListener("click", async () => {
           list.classList.add("hidden");
@@ -1672,6 +1726,39 @@
     updatePathPreview();
     updateActionButtons({ downloading: lastDownloadBusy });
     scheduleAlbumMatchSearch();
+    filterArtistSuggest();
+  });
+  els.artist.addEventListener("focus", filterArtistSuggest);
+  els.artist.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      closeArtistSuggest();
+    } else if (ev.key === "ArrowDown") {
+      const first = els.artistSuggestList?.querySelector(".suggest-hit");
+      if (first) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+  });
+  els.artistSuggestList?.addEventListener("keydown", (ev) => {
+    const items = [...els.artistSuggestList.querySelectorAll(".suggest-hit")];
+    const i = items.indexOf(document.activeElement);
+    if (ev.key === "ArrowDown" && i < items.length - 1) {
+      ev.preventDefault();
+      items[i + 1].focus();
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (i > 0) items[i - 1].focus();
+      else els.artist.focus();
+    } else if (ev.key === "Escape") {
+      closeArtistSuggest();
+      els.artist.focus();
+    }
+  });
+  document.addEventListener("click", (ev) => {
+    if (!els.artistSuggestPanel || els.artistSuggestPanel.classList.contains("hidden")) return;
+    const field = $("artist-field");
+    if (field && !field.contains(ev.target)) closeArtistSuggest();
   });
   els.album.addEventListener("input", () => {
     updatePathPreview();

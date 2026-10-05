@@ -19,7 +19,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=39" />
+  <link rel="stylesheet" href="/static/style.css?v=40" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -73,18 +73,25 @@
         </label>
 
         <div class="form-row">
-          <label class="field grow">
-            <span>Artist</span>
-            <input
-              id="artist"
-              type="text"
-              list="artist-list"
-              placeholder="Type or pick an artist…"
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <datalist id="artist-list"></datalist>
-          </label>
+          <div class="field grow combo" id="artist-field">
+            <label for="artist"><span>Artist</span></label>
+            <div class="combo-input">
+              <input
+                id="artist"
+                type="text"
+                placeholder="Type or pick an artist…"
+                autocomplete="off"
+                spellcheck="false"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="artist-suggest-list"
+                aria-autocomplete="list"
+              />
+            </div>
+            <div class="suggest-panel hidden" id="artist-suggest" aria-label="Known artists">
+              <ul id="artist-suggest-list" class="suggest-list is-plain" role="listbox"></ul>
+            </div>
+          </div>
           <button id="btn-new-artist" class="btn ghost form-side-btn" type="button" title="Pre-create an empty artist folder">New folder</button>
         </div>
 
@@ -291,6 +298,7 @@
             <button id="btn-lib-new" class="btn ghost quiet" type="button">New folder</button>
             <button id="btn-lib-collapse" class="btn ghost quiet" type="button">Collapse all</button>
             <button id="btn-lib-refresh" class="btn ghost quiet" type="button">Refresh</button>
+            <button id="btn-lib-sort" class="btn ghost quiet" type="button" title="Switch how songs are ordered">Sort: Track #</button>
           </div>
           <div class="lib-toolbar-group">
             <button id="btn-lib-select-all" class="btn ghost quiet" type="button">Select all</button>
@@ -434,7 +442,9 @@
       </header>
 
       <div class="review-album">
-        <img id="review-art" class="review-art" alt="" hidden />
+        <div class="review-art-tile" id="review-art-tile">
+          <img id="review-art" class="review-art" alt="" hidden />
+        </div>
         <div class="review-album-main">
           <p id="review-album-name" class="review-album-name">Looking up album…</p>
           <p id="review-counts" class="review-counts"></p>
@@ -528,6 +538,42 @@
     </div>
   </div>
 
+  <div id="add-track-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="add-track-title">
+    <div class="modal-card remediate-card">
+      <div class="panel-head">
+        <h2 id="add-track-title">Add song</h2>
+        <button id="btn-add-track-close" class="btn tiny" type="button">Close</button>
+      </div>
+      <p id="add-track-album" class="browse-path"></p>
+      <label class="field">
+        <span>YouTube video URL</span>
+        <input id="add-track-url" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
+      </label>
+      <label class="field">
+        <span>Title</span>
+        <input id="add-track-title-input" type="text" placeholder="Song title" autocomplete="off" />
+      </label>
+      <div class="form-row two">
+        <label class="field">
+          <span>Artist</span>
+          <input id="add-track-artist" type="text" placeholder="Defaults to the album artist" autocomplete="off" />
+        </label>
+        <label class="field tight">
+          <span>Track #</span>
+          <input id="add-track-number" type="number" min="1" max="999" placeholder="Auto" />
+        </label>
+      </div>
+      <p class="hint">
+        Downloads and tags it to match the rest of this album — same album, album
+        artist, and cover art. Leave track # blank to fill the first open slot.
+      </p>
+      <p id="add-track-status" class="cover-search-status hidden"></p>
+      <div class="browse-actions">
+        <button id="btn-add-track-go" class="btn solid" type="button">Add song</button>
+      </div>
+    </div>
+  </div>
+
   <div id="browse-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="browse-title">
     <div class="modal-card">
       <div class="panel-head">
@@ -544,7 +590,7 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=39"></script>
-  <script src="/static/library.js?v=39"></script>
+  <script src="/static/app.js?v=40"></script>
+  <script src="/static/library.js?v=40"></script>
 </body>
 </html>

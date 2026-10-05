@@ -900,6 +900,15 @@ def build_download_options(
         verbose=verbose,
         strategy=strategy,
     )
+    # yt-dlp's default is to NOT re-download the destination media file if one
+    # already exists there, reusing it as-is instead. Our retry loop tries
+    # several different candidate videos/strategies against that same fixed
+    # output path when an earlier attempt fails partway through (e.g. the
+    # audio downloaded fine but thumbnail-embedding then errored) - without
+    # this, the next attempt silently keeps that stale/partial file, its
+    # postprocessors succeed on it, and the track gets reported "saved" while
+    # never actually downloading the retry's audio.
+    options["overwrites"] = True
     if embed_metadata:
         options["writethumbnail"] = True
         options["embedthumbnail"] = True

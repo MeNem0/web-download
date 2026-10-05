@@ -77,6 +77,7 @@ from metadata_tags import (
 )
 from music_downloader import (
     DownloadCallbacks,
+    SourceType,
     Track,
     download_url,
     parse_track_selector,
@@ -760,7 +761,17 @@ ffmpeg_available = bool(find_ffmpeg())
 job = JobState(output_dir=str(default_output_dir))
 
 app = FastAPI(title="Music Downloader", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+class _RevalidatingStaticFiles(StaticFiles):
+    """Serve assets with ``no-cache`` so a normal reload always picks up an
+    updated UI (the browser still gets cheap 304s when nothing changed)."""
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _RevalidatingStaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 FOLDER_NAME_RE = re.compile(r'^[^\x00-\x1f<>:"/\\|?*]+$')
@@ -855,11 +866,12 @@ def list_browse_entries(raw: str | None) -> dict[str, Any]:
         if not path.exists() or not path.is_dir():
             raise HTTPException(status_code=404, detail=f"Folder not found: {path}")
 
-        at_root = path.resolve() == root
+        at_root = path == root
         parent_path = None if at_root else str(path.parent)
         entries: list[dict[str, str]] = []
         try:
-            children = sorted(path.iterdir(), key=lambda p: p.name.lower())
+            with os.scandir(path) as it:
+                children = sorted(it, key=lambda e: e.name.lower())
         except OSError as exc:
             raise HTTPException(status_code=400, detail=f"Cannot list folder: {exc}") from exc
         for child in children:
@@ -868,10 +880,7 @@ def list_browse_entries(raw: str | None) -> dict[str, Any]:
             name = child.name
             if name.startswith("."):
                 continue
-            try:
-                entries.append({"name": name, "path": str(child.resolve())})
-            except OSError:
-                continue
+            entries.append({"name": name, "path": child.path})
             if len(entries) >= 400:
                 break
         return {
@@ -920,7 +929,8 @@ def list_browse_entries(raw: str | None) -> dict[str, Any]:
 
     entries = []
     try:
-        children = sorted(path.iterdir(), key=lambda p: p.name.lower())
+        with os.scandir(path) as it:
+            children = sorted(it, key=lambda e: e.name.lower())
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot list folder: {exc}") from exc
 
@@ -930,10 +940,7 @@ def list_browse_entries(raw: str | None) -> dict[str, Any]:
         name = child.name
         if name.startswith("."):
             continue
-        try:
-            entries.append({"name": name, "path": str(child.resolve())})
-        except OSError:
-            continue
+        entries.append({"name": name, "path": child.path})
         if len(entries) >= 400:
             break
 
@@ -975,16 +982,23 @@ def release_path(artist: str, album: str) -> Path:
 
 
 def list_artists() -> list[dict[str, str]]:
+    """List artist folders.
+
+    Uses os.scandir (not pathlib) so is_dir() reads the attributes already
+    returned by the directory listing instead of a fresh stat() per entry -
+    on a network share each of those round-trips can cost hundreds of ms.
+    """
     root = library_root()
-    artists: list[dict[str, str]] = []
     try:
-        children = sorted(root.iterdir(), key=lambda p: p.name.lower())
+        with os.scandir(root) as it:
+            children = sorted(it, key=lambda e: e.name.lower())
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot list artists: {exc}") from exc
+    artists: list[dict[str, str]] = []
     for child in children:
-        if not child.is_dir() or child.name.startswith("."):
+        if child.name.startswith(".") or not child.is_dir():
             continue
-        artists.append({"name": child.name, "path": str(child.resolve())})
+        artists.append({"name": child.name, "path": child.path})
     return artists
 
 
@@ -1059,19 +1073,26 @@ def _resolve_library_path(raw: str | None, *, must_exist: bool = True) -> Path:
     return path
 
 
+def _track_no(meta: dict[str, Any]) -> int | None:
+    """Album track number from the TRCK tag ("3" or "3/12"), else None."""
+    text = str(meta.get("track_number") or "").strip()
+    return int(text) if text.isdigit() else None
+
+
 def list_library_entries(raw: str | None) -> dict[str, Any]:
     root = library_root()
     path = _resolve_library_path(raw, must_exist=True)
     if path.is_file():
         path = path.parent
 
-    at_root = path.resolve() == root
+    at_root = path == root
     parent_path = None if at_root else str(path.parent)
     folders: list[dict[str, Any]] = []
     files: list[dict[str, Any]] = []
 
     try:
-        children = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        with os.scandir(path) as it:
+            children = sorted(it, key=lambda e: (not e.is_dir(), e.name.lower()))
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot list folder: {exc}") from exc
 
@@ -1079,24 +1100,22 @@ def list_library_entries(raw: str | None) -> dict[str, Any]:
         name = child.name
         if name.startswith("."):
             continue
-        try:
-            resolved = str(child.resolve())
-        except OSError:
-            continue
         if child.is_dir():
-            folders.append({"name": name, "path": resolved, "type": "dir"})
-        elif child.is_file() and child.suffix.lower() in AUDIO_EXTENSIONS:
-            meta = read_track_metadata(child)
+            folders.append({"name": name, "path": child.path, "type": "dir"})
+        elif child.is_file() and Path(name).suffix.lower() in AUDIO_EXTENSIONS:
+            track_path = Path(child.path)
+            meta = read_track_metadata(track_path)
             files.append(
                 {
                     "name": name,
-                    "path": resolved,
+                    "path": child.path,
                     "type": "file",
                     "size": child.stat().st_size,
-                    "title": meta.get("title") or child.stem,
+                    "title": meta.get("title") or track_path.stem,
                     "artists": meta.get("artists") or "",
                     "album": meta.get("album") or "",
                     "has_cover": bool(meta.get("has_cover")),
+                    "track_number": _track_no(meta),
                 }
             )
         if len(folders) + len(files) >= 800:
@@ -1139,76 +1158,73 @@ def search_library(
     folders: list[dict[str, Any]] = []
     scanned = 0
     max_scan = 8_000
+    stop = False
 
-    try:
-        walker = base.rglob("*")
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot search: {exc}") from exc
-
-    for child in walker:
-        if scanned >= max_scan or (len(files) + len(folders)) >= limit:
+    # os.walk (scandir-backed) instead of Path.rglob: rglob's is_dir()/is_file()
+    # and a per-entry resolve() each cost a fresh stat() round-trip, which on a
+    # network share can run into minutes across thousands of files. os.walk
+    # already splits dirs from files for free during the directory read, and
+    # entries are already absolute since `base` is.
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        if stop:
             break
-        name = child.name
-        if name.startswith("."):
-            continue
-        try:
-            rel_parts = child.relative_to(root).parts
-        except ValueError:
-            continue
-        if any(part.startswith(".") for part in rel_parts):
-            continue
-        try:
-            resolved = str(child.resolve())
-        except OSError:
-            continue
 
-        rel = "/".join(rel_parts)
-        if child.is_dir():
+        for name in dirnames:
+            if scanned >= max_scan or (len(files) + len(folders)) >= limit:
+                stop = True
+                break
+            full = os.path.join(dirpath, name)
+            rel = "/".join(Path(full).relative_to(root).parts)
             if hay_matches(name) or hay_matches(rel):
-                folders.append(
-                    {
-                        "name": name,
-                        "path": resolved,
-                        "type": "dir",
-                        "rel": rel,
-                    }
-                )
-            continue
+                folders.append({"name": name, "path": full, "type": "dir", "rel": rel})
+        if stop:
+            break
 
-        if not child.is_file() or child.suffix.lower() not in AUDIO_EXTENSIONS:
-            continue
+        for name in filenames:
+            if scanned >= max_scan or (len(files) + len(folders)) >= limit:
+                stop = True
+                break
+            if name.startswith(".") or Path(name).suffix.lower() not in AUDIO_EXTENSIONS:
+                continue
 
-        scanned += 1
-        matched = hay_matches(name) or hay_matches(rel)
-        meta: dict[str, Any] | None = None
-        if not matched:
-            meta = read_track_metadata(child)
-            matched = hay_matches(
-                " ".join(
-                    [
-                        str(meta.get("title") or ""),
-                        str(meta.get("artists") or ""),
-                        str(meta.get("album") or ""),
-                    ]
+            full = os.path.join(dirpath, name)
+            rel = "/".join(Path(full).relative_to(root).parts)
+            scanned += 1
+            matched = hay_matches(name) or hay_matches(rel)
+            child = Path(full)
+            meta: dict[str, Any] | None = None
+            if not matched:
+                meta = read_track_metadata(child)
+                matched = hay_matches(
+                    " ".join(
+                        [
+                            str(meta.get("title") or ""),
+                            str(meta.get("artists") or ""),
+                            str(meta.get("album") or ""),
+                        ]
+                    )
                 )
+            if not matched:
+                continue
+            if meta is None:
+                meta = read_track_metadata(child)
+            files.append(
+                {
+                    "name": name,
+                    "path": full,
+                    "type": "file",
+                    "size": child.stat().st_size,
+                    "title": meta.get("title") or child.stem,
+                    "artists": meta.get("artists") or "",
+                    "album": meta.get("album") or "",
+                    "has_cover": bool(meta.get("has_cover")),
+                    "track_number": _track_no(meta),
+                    "rel": rel,
+                }
             )
-        if not matched:
-            continue
-        if meta is None:
-            meta = read_track_metadata(child)
-        files.append(
-            {
-                "name": name,
-                "path": resolved,
-                "type": "file",
-                "size": child.stat().st_size,
-                "title": meta.get("title") or child.stem,
-                "artists": meta.get("artists") or "",
-                "album": meta.get("album") or "",
-                "has_cover": bool(meta.get("has_cover")),
-                "rel": rel,
-            }
-        )
+        if stop:
+            break
 
     folders.sort(key=lambda item: str(item.get("rel") or item.get("name") or "").lower())
     files.sort(key=lambda item: str(item.get("rel") or item.get("name") or "").lower())
@@ -1376,7 +1392,10 @@ class TrackSkipBody(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/api/status")
@@ -1889,6 +1908,141 @@ async def library_replace_audio(body: LibraryReplaceBody) -> dict[str, Any]:
         "name": target.name,
         **updated,
         "cover_url": f"/api/library/cover?path={quote(str(target))}" if updated.get("has_cover") else None,
+    }
+
+
+class LibraryAddTrackBody(BaseModel):
+    album_path: str = Field(min_length=1)
+    youtube_url: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=200)
+    artist: str = Field(default="", max_length=120)
+    track_number: int | None = Field(default=None, ge=1, le=999)
+    browser: str | None = None
+    debug: bool = False
+
+
+def _infer_album_context(folder: Path) -> dict[str, Any]:
+    """Read album/artist/compilation/cover from a sibling track already in the
+    folder, or fall back to the folder structure (Artist/Album) when it's empty.
+    """
+    existing = sorted(
+        (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS),
+        key=lambda p: p.name.lower(),
+    )
+    used_numbers: set[int] = set()
+    for p in existing:
+        num = str(read_track_metadata(p).get("track_number") or "").strip()
+        if num.isdigit():
+            used_numbers.add(int(num))
+
+    if existing:
+        meta = read_track_metadata(existing[0])
+        cover = read_cover_bytes(existing[0])
+        album = meta.get("album") or folder.name
+        album_artist = meta.get("album_artist") or folder.parent.name
+        compilation = bool(meta.get("compilation")) or album_artist == VARIOUS_ARTISTS
+        cover_bytes = cover[0] if cover else None
+        cover_mime = cover[1] if cover else None
+    else:
+        album = folder.name
+        album_artist = folder.parent.name
+        compilation = album_artist == VARIOUS_ARTISTS
+        cover_bytes = None
+        cover_mime = None
+
+    return {
+        "album": album,
+        "album_artist": album_artist,
+        "compilation": compilation,
+        "cover_bytes": cover_bytes,
+        "cover_mime": cover_mime,
+        "used_numbers": used_numbers,
+    }
+
+
+def _next_track_number(used: set[int]) -> int:
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
+
+@app.post("/api/library/track/add")
+async def library_add_track(body: LibraryAddTrackBody) -> dict[str, Any]:
+    """Download one song straight into an existing library album folder.
+
+    For patching a gap when an album download missed a track: paste the
+    right YouTube link and (optionally) the track number, and the new file
+    is tagged to match its siblings - same album, album artist, and cover
+    art - without retyping any of it.
+    """
+    folder = _resolve_library_path(body.album_path, must_exist=True)
+    if folder.is_file():
+        folder = folder.parent
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail="Not a folder")
+
+    ctx = await asyncio.to_thread(_infer_album_context, folder)
+    compilation = bool(ctx["compilation"])
+    artist = body.artist.strip()
+    if compilation and not artist:
+        raise HTTPException(
+            status_code=400,
+            detail="This is a Various Artists album - the song's own artist is required",
+        )
+    if not artist:
+        artist = ctx["album_artist"]
+
+    track_number = body.track_number or _next_track_number(ctx["used_numbers"])
+    if track_number in ctx["used_numbers"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Track {track_number} already exists in this album",
+        )
+
+    browser = body.browser if body.browser and body.browser != "none" else None
+    youtube_url = body.youtube_url.strip()
+    track = Track(
+        index=track_number,
+        title=body.title.strip(),
+        artists=artist,
+        duration_ms=0,
+        album=ctx["album"],
+        source=SourceType.YOUTUBE_VIDEO,
+        youtube_url=youtube_url,
+        album_track=track_number,
+    )
+
+    def _run() -> Any:
+        return remediate_track(
+            track,
+            folder,
+            browser=browser,
+            embed_metadata=True,
+            playlist_track_numbers=True,
+            debug=body.debug,
+            youtube_url=youtube_url,
+            loose_match=True,
+            album_override=ctx["album"],
+            artists_override=artist,
+            album_artist=ctx["album_artist"],
+            compilation=compilation,
+            cover_bytes=ctx["cover_bytes"],
+            cover_mime=ctx["cover_mime"],
+        )
+
+    result = await asyncio.to_thread(_run)
+    if result.status != "done":
+        raise HTTPException(status_code=400, detail=result.detail or "Could not download that track")
+
+    saved = folder / result.detail
+    meta = read_track_metadata(saved)
+    return {
+        "path": str(saved),
+        "name": saved.name,
+        "track_number": track_number,
+        **meta,
+        "cover_url": f"/api/library/cover?path={quote(str(saved))}" if meta.get("has_cover") else None,
     }
 
 
@@ -2661,7 +2815,21 @@ def _run_remediate(
             )
 
 
+def _ensure_stdio() -> None:
+    """Under pythonw with no console handles, stdout/stderr are None and
+    uvicorn's logging crashes at startup with nothing visible. Send output to
+    a log file instead so a windowless run works and leaves a trail."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    log = open(ROOT / "server.log", "a", encoding="utf-8", buffering=1)
+    if sys.stdout is None:
+        sys.stdout = log
+    if sys.stderr is None:
+        sys.stderr = log
+
+
 def main() -> None:
+    _ensure_stdio()
     import uvicorn
 
     host = resolve_bind_host()

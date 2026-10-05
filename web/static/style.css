@@ -158,9 +158,19 @@ body {
     width: 100%;
   }
 
-  .fix-panel { order: -2; }
-  .queue-panel { order: -1; }
+  /* Form first; queue and failed-song panels trail it instead of burying it. */
   .layout-main { order: 0; }
+  .queue-panel { order: 1; }
+  .fix-panel { order: 2; }
+}
+
+.lib-num {
+  display: inline-block;
+  min-width: 2ch;
+  margin-right: 8px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .fix-hint {
@@ -564,6 +574,15 @@ body {
 .suggest-meta {
   font-size: 0.74rem;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Plain text hits (artist names) - no artwork column. */
+.suggest-list.is-plain .suggest-hit {
+  display: block;
+  font-size: 0.86rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1582,12 +1601,24 @@ select:disabled {
   background: var(--input);
 }
 
-.review-art {
+/* Always rendered, art or not: if the <img> were hidden directly, CSS Grid
+   would drop it as a grid item and the other two children would slide into
+   its and each other's column tracks, wrecking the whole row's layout. */
+.review-art-tile {
   width: 44px;
   height: 44px;
   border-radius: 4px;
-  object-fit: cover;
+  overflow: hidden;
+  background: var(--cover-tile);
   border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.review-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .review-album-main { min-width: 0; }

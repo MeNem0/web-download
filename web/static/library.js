@@ -10,6 +10,7 @@
     btnNew: $("btn-lib-new"),
     btnCollapse: $("btn-lib-collapse"),
     btnRefresh: $("btn-lib-refresh"),
+    btnSort: $("btn-lib-sort"),
     btnEditSelected: $("btn-lib-edit-selected"),
     btnClearSelected: $("btn-lib-clear-selected"),
     btnSelectAll: $("btn-lib-select-all"),
@@ -50,6 +51,15 @@
     nameInput: $("name-modal-input"),
     btnNameCancel: $("btn-name-cancel"),
     btnNameConfirm: $("btn-name-confirm"),
+    addTrackModal: $("add-track-modal"),
+    addTrackAlbum: $("add-track-album"),
+    addTrackUrl: $("add-track-url"),
+    addTrackTitleInput: $("add-track-title-input"),
+    addTrackArtist: $("add-track-artist"),
+    addTrackNumber: $("add-track-number"),
+    addTrackStatus: $("add-track-status"),
+    btnAddTrackClose: $("btn-add-track-close"),
+    btnAddTrackGo: $("btn-add-track-go"),
   };
 
   if (!els.list) return;
@@ -477,7 +487,7 @@
       for (const folder of data.folders || []) {
         html.push(await renderFolder(folder, 0));
       }
-      for (const file of data.files || []) {
+      for (const file of sortFiles(data.files)) {
         html.push(renderFile(file, 0));
       }
       els.list.innerHTML = html.join("");
@@ -498,7 +508,7 @@
         for (const sub of child.folders || []) {
           bits.push(await renderFolder(sub, depth + 1));
         }
-        for (const file of child.files || []) {
+        for (const file of sortFiles(child.files)) {
           bits.push(renderFile(file, depth + 1));
         }
         if (!bits.length) {
@@ -524,6 +534,7 @@
             </div>
           </div>
           <div class="lib-actions">
+            <button class="lib-btn" type="button" data-add-track="${escapeHtml(folder.path)}">Add song</button>
             <button class="lib-btn" type="button" data-rename="${escapeHtml(folder.path)}">Rename</button>
             <button class="lib-btn danger" type="button" data-delete="${escapeHtml(folder.path)}">Delete</button>
           </div>
@@ -532,8 +543,34 @@
       </div>`;
   }
 
+  let sortMode = "track";
+  try {
+    if (localStorage.getItem("md-lib-sort") === "name") sortMode = "name";
+  } catch (_) { /* storage blocked: keep the default */ }
+
+  // Songs without a track number sink below numbered ones, name order within.
+  function sortFiles(files) {
+    const list = [...(files || [])];
+    const byName = (a, b) =>
+      String(a.title || a.name).localeCompare(String(b.title || b.name), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    if (sortMode === "name") return list.sort(byName);
+    return list.sort((a, b) => {
+      const an = a.track_number ?? Infinity;
+      const bn = b.track_number ?? Infinity;
+      return an === bn ? byName(a, b) : an - bn;
+    });
+  }
+
+  function updateSortButton() {
+    if (els.btnSort) els.btnSort.textContent = `Sort: ${sortMode === "track" ? "Track #" : "Name"}`;
+  }
+
   function renderFile(file, depth) {
     const sub = [file.artists, file.album].filter(Boolean).join(" · ") || file.name;
+    const num = file.track_number != null ? String(file.track_number).padStart(2, "0") : "";
     const checked = selected.has(file.path) ? " checked" : "";
     return `
       <div class="lib-node" role="treeitem" style="--d:${depth}">
@@ -544,7 +581,7 @@
           <div class="lib-body" data-edit="${escapeHtml(file.path)}" role="button" tabindex="0">
             <span class="lib-badge file">${LIB_ICON.file}<span class="sr-only">MP3</span></span>
             <div class="lib-copy">
-              <div class="lib-name">${escapeHtml(file.title || file.name)}</div>
+              <div class="lib-name">${num ? `<span class="lib-num">${num}</span>` : ""}${escapeHtml(file.title || file.name)}</div>
               <div class="lib-sub">${escapeHtml(sub)}</div>
             </div>
           </div>
@@ -594,7 +631,7 @@
       const data = await fetchListing(path);
       const bits = [];
       for (const sub of data.folders || []) bits.push(await renderFolder(sub, depth + 1));
-      for (const file of data.files || []) bits.push(renderFile(file, depth + 1));
+      for (const file of sortFiles(data.files)) bits.push(renderFile(file, depth + 1));
       childrenEl.innerHTML = bits.length
         ? bits.join("")
         : `<div class="lib-empty" style="--d:${depth + 1}">Empty folder</div>`;
@@ -632,6 +669,12 @@
     });
     root.querySelectorAll("[data-edit]").forEach((el) => {
       bindActivate(el, () => openEditor(el.getAttribute("data-edit")));
+    });
+    root.querySelectorAll("[data-add-track]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openAddTrack(btn.getAttribute("data-add-track"));
+      });
     });
     root.querySelectorAll("[data-rename]").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
@@ -738,6 +781,88 @@
       return;
     }
     await refresh();
+  }
+
+  let addTrackPath = null;
+
+  function setAddTrackStatus(message, { error = false } = {}) {
+    const el = els.addTrackStatus;
+    if (!el) return;
+    if (!message) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      el.classList.remove("is-error");
+      return;
+    }
+    el.textContent = message;
+    el.classList.toggle("is-error", !!error);
+    el.classList.remove("hidden");
+  }
+
+  function openAddTrack(path) {
+    addTrackPath = path;
+    const name = path.split(/[/\\]/).pop();
+    if (els.addTrackAlbum) els.addTrackAlbum.textContent = name;
+    if (els.addTrackUrl) els.addTrackUrl.value = "";
+    if (els.addTrackTitleInput) els.addTrackTitleInput.value = "";
+    if (els.addTrackArtist) els.addTrackArtist.value = "";
+    if (els.addTrackNumber) els.addTrackNumber.value = "";
+    setAddTrackStatus("");
+    els.addTrackModal?.classList.remove("hidden");
+    requestAnimationFrame(() => els.addTrackUrl?.focus());
+  }
+
+  function closeAddTrackModal() {
+    els.addTrackModal?.classList.add("hidden");
+    addTrackPath = null;
+  }
+
+  async function submitAddTrack() {
+    if (!addTrackPath) return;
+    const url = (els.addTrackUrl?.value || "").trim();
+    const title = (els.addTrackTitleInput?.value || "").trim();
+    if (!url) {
+      setAddTrackStatus("Paste a YouTube video URL first.", { error: true });
+      return;
+    }
+    if (!title) {
+      setAddTrackStatus("Give the song a title.", { error: true });
+      return;
+    }
+    const artist = (els.addTrackArtist?.value || "").trim();
+    const trackNumRaw = (els.addTrackNumber?.value || "").trim();
+    const trackNumber = trackNumRaw ? Number(trackNumRaw) : null;
+
+    const busy = [els.btnAddTrackGo, els.btnAddTrackClose];
+    busy.forEach((btn) => { if (btn) btn.disabled = true; });
+    setAddTrackStatus("Downloading and tagging to match the album… this can take a minute.");
+    try {
+      const res = await fetch("/api/library/track/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          album_path: addTrackPath,
+          youtube_url: url,
+          title,
+          artist,
+          track_number: trackNumber,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAddTrackStatus(data.detail || "Could not add that song", { error: true });
+        return;
+      }
+      const savedPath = addTrackPath;
+      invalidate(savedPath);
+      expanded.add(savedPath);
+      closeAddTrackModal();
+      await refresh();
+    } catch (err) {
+      setAddTrackStatus(err.message || "Could not add that song", { error: true });
+    } finally {
+      busy.forEach((btn) => { if (btn) btn.disabled = false; });
+    }
   }
 
   function setReplaceStatus(message, { error = false } = {}) {
@@ -1177,6 +1302,29 @@
       ev.preventDefault();
       closeNameModal(null);
     }
+  });
+
+  updateSortButton();
+  els.btnSort?.addEventListener("click", async () => {
+    sortMode = sortMode === "track" ? "name" : "track";
+    try { localStorage.setItem("md-lib-sort", sortMode); } catch (_) { /* ignore */ }
+    updateSortButton();
+    await render();
+  });
+
+  els.btnAddTrackClose?.addEventListener("click", () => closeAddTrackModal());
+  els.btnAddTrackGo?.addEventListener("click", () => submitAddTrack());
+  bindBackdropClose(els.addTrackModal, () => closeAddTrackModal());
+  [els.addTrackUrl, els.addTrackTitleInput, els.addTrackArtist, els.addTrackNumber].forEach((input) => {
+    input?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submitAddTrack();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeAddTrackModal();
+      }
+    });
   });
 
   openFolder(null);
