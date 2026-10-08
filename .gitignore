@@ -7,3 +7,4 @@ downloads/
 *.mp3
 .DS_Store
 server.log
+logs/

@@ -18,6 +18,8 @@ services:
       # That directory is the host folder from HOST_DOWNLOAD_DIR (volume below).
       OUTPUT_DIR: "/data"
       BROWSE_ROOT: "/data"
+      # Failure log lives beside the library so it survives container rebuilds.
+      LOG_DIR: "/data/.logs"
       # Host path string for UI display (must match the volume source).
       HOST_DOWNLOAD_DIR: "${HOST_DOWNLOAD_DIR:-./downloads}"
       ALLOW_LOCALHOST: "1"

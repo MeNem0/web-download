@@ -12,7 +12,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -211,12 +211,19 @@ class DownloadCallbacks:
     should_skip_track: Callable[[int], bool] | None = None
     on_tracks: Callable[[list[Track]], None] | None = None
     on_track_model: Callable[[Track], None] | None = None
+    # Called once per song that failed its pass, with the full failure details
+    # (the log lines only carry a one-line summary).
+    on_track_failed: Callable[[Track, "TrackDownloadResult"], None] | None = None
 
 
 @dataclass
 class TrackDownloadResult:
     status: str  # done | failed | skipped | cancelled
     detail: str = ""
+    # Failure diagnostics, filled in when status == "failed".
+    error: str = ""
+    attempts: int = 0
+    methods: list[str] = field(default_factory=list)
 
 
 def emit(
@@ -1271,7 +1278,11 @@ def download_single_track(
                     callbacks,
                     stderr=True,
                 )
-                return TrackDownloadResult("failed", "No YouTube search results")
+                return TrackDownloadResult(
+                    "failed",
+                    "No YouTube search results",
+                    error="No YouTube search results (search may be blocked)",
+                )
             top = entries[0]
             tol = (
                 f"{int(duration_tolerance)}s"
@@ -1286,7 +1297,7 @@ def download_single_track(
                 + ")"
             )
             emit(f"  {detail}", callbacks, stderr=True)
-            return TrackDownloadResult("failed", detail)
+            return TrackDownloadResult("failed", detail, error=detail)
 
         for entry in eligible[:MAX_DOWNLOAD_ATTEMPTS]:
             entry_url = entry.get("webpage_url") or entry.get("url")
@@ -1303,7 +1314,7 @@ def download_single_track(
 
     if not candidates:
         emit(f"  [{track.index:03d}] failed: no download URL", callbacks, stderr=True)
-        return TrackDownloadResult("failed", "No download URL")
+        return TrackDownloadResult("failed", "No download URL", error="No download URL")
 
     final_mp3: Path | None = None
     used_thumbnail: str | None = None
@@ -1412,6 +1423,9 @@ def download_single_track(
         return TrackDownloadResult(
             "failed",
             f"Failed after {total_attempts} attempt(s) via {ways}",
+            error=last_reason,
+            attempts=total_attempts,
+            methods=list(tried_strategies),
         )
 
     if embed_metadata:
@@ -1702,6 +1716,11 @@ def _download_tracks(
             skipped += 1
         elif result.status == "failed":
             failed += 1
+            if callbacks and callbacks.on_track_failed:
+                try:
+                    callbacks.on_track_failed(work, result)
+                except Exception:  # noqa: BLE001 - logging must never stop a download
+                    pass
         completed += 1
 
     if callbacks and callbacks.progress:

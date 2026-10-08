@@ -33,10 +33,12 @@ import asyncio
 import ipaddress
 import os
 import re
+import copy
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -52,8 +54,12 @@ TRACK_LINE_RE = re.compile(
 SAVED_LINE_RE = re.compile(
     r"^ {2}(?:\[(\d{3})\] )?saved(?: with metadata| \(metadata failed:[^)]*\))?:\s*(.+)$"
 )
+# "failed after 4 attempt(s) across 3 method(s): Title" is what the strategy
+# ladder emits; the shorter forms are kept for older lines and other failures.
+# If this stops matching, a failed song is silently filed as saved.
 FAILED_LINE_RE = re.compile(
-    r"^ {2}(?:\[(\d{3})\] )?failed(?: after \d+ attempt\(s\))?:\s*(.+)$"
+    r"^ {2}(?:\[(\d{3})\] )?failed"
+    r"(?: after \d+ attempt\(s\)(?: across \d+ method\(s\))?)?:\s*(.+)$"
 )
 FAILED_NO_URL = "  failed: no download URL"
 FAILED_NO_URL_INDEXED = re.compile(r"^ {2}\[(\d{3})\] failed: no download URL$")
@@ -68,6 +74,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from download_playlist import download_strategies, find_ffmpeg, find_node, ytdlp_version
+from failure_log import FailureLog
+from fast_tags import read_track_metadata_fast
+from tag_cache import TagCache
 from metadata_tags import (
     VARIOUS_ARTISTS,
     apply_track_metadata,
@@ -79,6 +88,7 @@ from music_downloader import (
     DownloadCallbacks,
     SourceType,
     Track,
+    TrackDownloadResult,
     download_url,
     parse_track_selector,
     remediate_track,
@@ -716,6 +726,60 @@ class JobState:
         elif adjust_failed > 0 and prev != "failed" and status == "failed":
             self.failed += adjust_failed
 
+    def describe_failure(self, index: int, reason: str) -> None:
+        """Show why a song failed (the failure log line only carries its title)."""
+        reason = " ".join(reason.split())[:200]
+        if not reason:
+            return
+        with self.lock:
+            row = self._track_by_index(index)
+            if row.get("status") != "failed":
+                return
+            row["detail"] = reason
+            fix = self._find_open_fix(job_id=self.job_id, track_index=index)
+            if fix is not None and fix.get("status") == "failed":
+                fix["detail"] = reason
+            self.bump()
+
+    def begin_retry(self, fix: dict[str, Any], detail: str) -> None:
+        """An automatic retry of a failed song starts inside the running job.
+
+        Unlike sync_fix_track this may flip the row to "active": the job thread
+        itself is doing the retrying, so nothing else owns the active row.
+        """
+        with self.lock:
+            index = int(fix["track_index"])
+            row = self._track_by_index(index)
+            if row.get("status") == "failed":
+                self.failed = max(0, self.failed - 1)
+            row["status"] = "active"
+            row["detail"] = detail
+            self._active_index = index
+            fix["status"] = "fixing"
+            fix["detail"] = detail
+            self.status = f"{detail} · {row.get('title') or fix.get('title') or ''}"
+            self.file_percent = 0
+            self.bump()
+
+    def end_retry(self, fix: dict[str, Any], *, ok: bool, detail: str) -> None:
+        with self.lock:
+            index = int(fix["track_index"])
+            row = self._track_by_index(index)
+            if ok:
+                row["status"] = "done"
+                row["detail"] = detail
+                self.remove_open_fix(str(fix.get("id")))
+            else:
+                row["status"] = "failed"
+                row["detail"] = detail
+                self.failed += 1
+                fix["status"] = "failed"
+                fix["detail"] = detail
+            if self._active_index == index:
+                self._active_index = None
+            self.file_percent = 0
+            self.bump()
+
     def set_progress(self, completed: int, total: int) -> None:
         with self.lock:
             self.completed = completed
@@ -759,6 +823,14 @@ host_download_dir = os.environ.get("HOST_DOWNLOAD_DIR", "").strip()
 # ffmpeg, so this only matters for a bare "python web_server.py" run.
 ffmpeg_available = bool(find_ffmpeg())
 job = JobState(output_dir=str(default_output_dir))
+failure_log = FailureLog()
+tag_cache = TagCache(failure_log.directory)
+
+# Failed songs get this many extra passes after the album's first pass (0 = off).
+DEFAULT_RETRY_ROUNDS = max(0, min(5, int(os.environ.get("AUTO_RETRY_ROUNDS", "2") or 0)))
+# Seconds to wait before retry round N is N * this: failures are mostly
+# transient (YouTube blocking a client, a dropped connection), so give them time.
+RETRY_DELAY_SECONDS = max(0.0, float(os.environ.get("AUTO_RETRY_DELAY", "20") or 0))
 
 app = FastAPI(title="Music Downloader", docs_url=None, redoc_url=None)
 class _RevalidatingStaticFiles(StaticFiles):
@@ -1096,6 +1168,7 @@ def list_library_entries(raw: str | None) -> dict[str, Any]:
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot list folder: {exc}") from exc
 
+    songs: list[os.DirEntry[str]] = []
     for child in children:
         name = child.name
         if name.startswith("."):
@@ -1103,23 +1176,26 @@ def list_library_entries(raw: str | None) -> dict[str, Any]:
         if child.is_dir():
             folders.append({"name": name, "path": child.path, "type": "dir"})
         elif child.is_file() and Path(name).suffix.lower() in AUDIO_EXTENSIONS:
-            track_path = Path(child.path)
-            meta = read_track_metadata(track_path)
-            files.append(
-                {
-                    "name": name,
-                    "path": child.path,
-                    "type": "file",
-                    "size": child.stat().st_size,
-                    "title": meta.get("title") or track_path.stem,
-                    "artists": meta.get("artists") or "",
-                    "album": meta.get("album") or "",
-                    "has_cover": bool(meta.get("has_cover")),
-                    "track_number": _track_no(meta),
-                }
-            )
-        if len(folders) + len(files) >= 800:
+            songs.append(child)
+        if len(folders) + len(songs) >= 800:
             break
+
+    # Tags are the slow part on a network share: served from the cache when the
+    # file hasn't changed, and read in parallel otherwise.
+    for child, meta in zip(songs, tag_cache.read_many(songs, read_track_metadata_fast)):
+        files.append(
+            {
+                "name": child.name,
+                "path": child.path,
+                "type": "file",
+                "size": child.stat().st_size,
+                "title": meta.get("title") or Path(child.name).stem,
+                "artists": meta.get("artists") or "",
+                "album": meta.get("album") or "",
+                "has_cover": bool(meta.get("has_cover")),
+                "track_number": _track_no(meta),
+            }
+        )
 
     return {
         "root": str(root),
@@ -1195,7 +1271,7 @@ def search_library(
             child = Path(full)
             meta: dict[str, Any] | None = None
             if not matched:
-                meta = read_track_metadata(child)
+                meta = tag_cache.read_one(child, read_track_metadata_fast)
                 matched = hay_matches(
                     " ".join(
                         [
@@ -1208,7 +1284,7 @@ def search_library(
             if not matched:
                 continue
             if meta is None:
-                meta = read_track_metadata(child)
+                meta = tag_cache.read_one(child, read_track_metadata_fast)
             files.append(
                 {
                     "name": name,
@@ -1368,6 +1444,8 @@ class DownloadRequest(BaseModel):
     browser: str | None = None
     # Songs the user approved in the review step; overrides re-reading the link.
     track_plan: list[dict[str, Any]] | None = Field(default=None, max_length=1000)
+    # Extra passes over songs that failed (None = server default, 0 = off).
+    retry_rounds: int | None = Field(default=None, ge=0, le=5)
 
 
 class ArtistCreateBody(BaseModel):
@@ -1376,6 +1454,13 @@ class ArtistCreateBody(BaseModel):
 
 class QueueRemoveBody(BaseModel):
     id: str = Field(min_length=1)
+
+
+class JobRetryBody(BaseModel):
+    id: str = Field(min_length=1)
+
+# Queue items by job id, as they were when each job started (newest last).
+started_items: dict[str, dict[str, Any]] = {}
 
 
 class RemediateRequest(BaseModel):
@@ -2160,6 +2245,9 @@ def _queue_item_from_body(body: DownloadRequest) -> dict[str, Any]:
             "browser": browser,
             "cover_url": (body.cover_url or "").strip() or None,
             "cover_path": (body.cover_path or "").strip() or None,
+            "retry_rounds": (
+                DEFAULT_RETRY_ROUNDS if body.retry_rounds is None else body.retry_rounds
+            ),
         },
     }
 
@@ -2184,6 +2272,10 @@ def _ensure_queue_worker() -> None:
         options = dict(item["options"])
         url = item["url"]
         job.reset_job(url=url, output_dir=str(dest), options=options)
+        # Remember what was asked so a failed job can be re-queued later.
+        started_items[str(item.get("id"))] = item
+        while len(started_items) > 40:
+            started_items.pop(next(iter(started_items)))
 
     thread = threading.Thread(
         target=_run_download,
@@ -2431,6 +2523,26 @@ async def start_download(body: DownloadRequest) -> dict[str, Any]:
     return {"ok": True, "queued": item, "status": job.snapshot()}
 
 
+@app.post("/api/jobs/retry")
+async def retry_job(body: JobRetryBody) -> dict[str, Any]:
+    """Queue a finished job again with exactly the settings it had."""
+    original = started_items.get(body.id)
+    if original is None:
+        raise HTTPException(
+            status_code=404,
+            detail="That job can't be retried any more - queue it again from the form.",
+        )
+    item = copy.deepcopy(original)
+    new_id = uuid.uuid4().hex[:12]
+    item.update(id=new_id, status="pending", percent=0, status_text="Queued")
+    item["options"]["job_id"] = new_id
+    with job.lock:
+        job.pending.append(item)
+        job.bump()
+    _ensure_queue_worker()
+    return {"ok": True, "queued": new_id, "status": job.snapshot()}
+
+
 @app.post("/api/queue/remove")
 async def queue_remove(body: QueueRemoveBody) -> dict[str, Any]:
     with job.lock:
@@ -2482,6 +2594,15 @@ async def start_remediate(body: RemediateRequest) -> dict[str, Any]:
                 status="skipped",
                 detail="Skipped by user",
                 adjust_failed=-1,
+            )
+            failure_log.record(
+                "skipped",
+                job_id=str(fix.get("job_id") or ""),
+                artist=fix.get("artist"),
+                album=fix.get("album"),
+                index=int(fix["track_index"]),
+                title=skip_title,
+                detail="Skipped by user",
             )
             job.remove_open_fix(fix_id)
             if not job.running:
@@ -2549,6 +2670,120 @@ async def start_remediate(body: RemediateRequest) -> dict[str, Any]:
     return {"ok": True, "status": job.snapshot()}
 
 
+@app.get("/api/failures")
+async def failures_list(limit: int = 200, event: str = "", q: str = "") -> dict[str, Any]:
+    """Recent failure/retry events, newest first, for the Failure log panel."""
+    return {
+        "entries": failure_log.entries(limit=min(max(limit, 1), 1000), event=event, query=q),
+        "counts": failure_log.counts(),
+        "path": str(failure_log.path),
+        "auto_retry_rounds": DEFAULT_RETRY_ROUNDS,
+    }
+
+
+@app.get("/api/failures/export")
+async def failures_export(format: str = "txt") -> Response:
+    """The whole log as a download: readable text, or the raw JSON lines."""
+    if format == "jsonl":
+        try:
+            body = failure_log.path.read_text(encoding="utf-8")
+        except OSError:
+            body = ""
+        name, kind = "failures.jsonl", "application/x-ndjson"
+    else:
+        body, name, kind = failure_log.export_text(), "failures.log", "text/plain"
+    return Response(
+        content=body,
+        media_type=f"{kind}; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.post("/api/failures/clear")
+async def failures_clear() -> dict[str, Any]:
+    failure_log.clear()
+    return {"ok": True}
+
+
+def _begin_fix(fix: dict[str, Any], action: str) -> dict[str, Any]:
+    """Flip a failed song to 'fixing' (caller holds job.lock); returns launch info."""
+    options = dict(fix.get("options") or {})
+    fix["status"] = "fixing"
+    fix["detail"] = {
+        "retry": "Retrying search",
+        "loose": "Loose search (any duration)",
+        "paste_url": "Downloading pasted URL",
+    }.get(action, "Fixing")
+    job.remediating = True
+    job.fix_cancel_flag = False
+    if not job.running:
+        job.status = f"Fixing · {fix.get('title')}"
+        job.file_percent = 0
+    job.sync_fix_track(
+        fix_job_id=str(fix.get("job_id") or ""),
+        track_index=int(fix["track_index"]),
+        status="active",
+        detail=str(fix["detail"]),
+        adjust_failed=-1,
+    )
+    job.bump()
+    return {
+        "fix_id": str(fix["id"]),
+        "track_index": int(fix["track_index"]),
+        "browser": options.get("browser"),
+        "dest": Path(str(fix["output_dir"])) if fix.get("output_dir") else last_output_dir,
+    }
+
+
+def _run_retry_all(fix_ids: list[str]) -> None:
+    """Retry each failed song in turn through the normal single-fix path."""
+    for position, fix_id in enumerate(fix_ids):
+        with job.lock:
+            fix = job._find_open_fix(fix_id=fix_id)
+            if (
+                fix is None
+                or fix.get("status") != "failed"
+                or fix.get("model") is None
+            ):
+                continue
+            launch = _begin_fix(fix, "retry")
+        job.append_log(
+            f"Retry all · {position + 1}/{len(fix_ids)}", parse=False
+        )
+        _run_remediate(
+            fix_id=launch["fix_id"],
+            track_index=launch["track_index"],
+            action="retry",
+            youtube_url=None,
+            browser=launch["browser"],
+            dest=launch["dest"],
+        )
+        if job.fix_cancel_flag:
+            break
+    with job.lock:
+        job.remediating = False
+        job.bump()
+
+
+@app.post("/api/remediate/retry-all")
+async def retry_all_failed() -> dict[str, Any]:
+    """Retry every song in the Needs attention list, one after another."""
+    with job.lock:
+        if job.remediating:
+            raise HTTPException(status_code=409, detail="Another fix is already in progress")
+        ids = [
+            str(f["id"])
+            for f in job.open_fixes
+            if f.get("status") == "failed" and f.get("model") is not None
+        ]
+        if not ids:
+            raise HTTPException(status_code=400, detail="No failed songs to retry")
+        # Claim the slot now so a second click can't start a parallel run.
+        job.remediating = True
+    threading.Thread(target=_run_retry_all, args=(ids,), daemon=True).start()
+    return {"ok": True, "count": len(ids), "status": job.snapshot()}
+
+
 @app.post("/api/cancel")
 async def cancel_download() -> dict[str, Any]:
     with job.lock:
@@ -2596,6 +2831,170 @@ async def skip_queued_track(body: TrackSkipBody) -> dict[str, Any]:
     return {"ok": True, "status": job.snapshot()}
 
 
+def _remediate_from_options(
+    model: Track,
+    dest: Path,
+    options: dict[str, Any],
+    *,
+    callbacks: DownloadCallbacks,
+    cover: tuple[bytes | None, str | None],
+    loose: bool = False,
+    youtube_url: str | None = None,
+) -> Any:
+    """Re-download one failed song with the settings its album job used."""
+    artist = str(options.get("artist") or "")
+    album = str(options.get("album") or "")
+    compilation = _is_compilation(options)
+    return remediate_track(
+        model,
+        dest,
+        browser=options.get("browser"),
+        embed_metadata=bool(options.get("embed_metadata", True)),
+        playlist_track_numbers=bool(options.get("playlist_track_numbers", True)),
+        debug=bool(options.get("debug", False)),
+        youtube_url=youtube_url,
+        loose_match=loose,
+        callbacks=callbacks,
+        album_override=album or None,
+        artists_override=None if compilation else (artist or None),
+        album_artist=str(options.get("album_artist") or "").strip() or artist or None,
+        compilation=compilation,
+        cover_bytes=cover[0],
+        cover_mime=cover[1],
+    )
+
+
+def _failed_fixes_for_job() -> list[dict[str, Any]]:
+    """Open failures of the current job that a retry can actually act on."""
+    with job.lock:
+        return [
+            fix
+            for fix in job.open_fixes
+            if fix.get("job_id") == job.job_id
+            and fix.get("status") == "failed"
+            and fix.get("model") is not None
+            and fix.get("detail") != "Cancelled"
+        ]
+
+
+def _sleep_unless_cancelled(seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while not job.cancel_flag:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def _auto_retry_failed(
+    *,
+    dest: Path,
+    options: dict[str, Any],
+    rounds: int,
+    cover: tuple[bytes | None, str | None],
+) -> bool:
+    """Retry the job's failed songs, up to ``rounds`` extra passes, logging each try.
+
+    Runs on the job's own thread before the job is filed as finished, so the
+    queue waits for the retries and the status line shows what is happening.
+    Returns True when every song that failed has been recovered.
+    """
+
+    def log(message: str) -> None:
+        job.append_fix_log(message)  # never parsed into the album's song list
+
+    def file_progress(fraction: float) -> None:
+        # Only the current-file meter: the album's own bar is already full.
+        with job.lock:
+            job.file_percent = int(max(0.0, min(1.0, fraction)) * 100)
+            job.bump()
+
+    callbacks = DownloadCallbacks(
+        log=log,
+        file_progress=file_progress,
+        should_cancel=lambda: bool(job.cancel_flag),
+    )
+    context = {"job_id": job.job_id, "artist": job.artist, "album": job.album}
+    had_failures = bool(_failed_fixes_for_job())
+
+    for round_no in range(1, rounds + 1):
+        targets = _failed_fixes_for_job()
+        if not targets or job.cancel_flag:
+            break
+
+        wait = RETRY_DELAY_SECONDS * round_no
+        noun = "song" if len(targets) == 1 else "songs"
+        job.append_log(
+            f"Retrying {len(targets)} failed {noun} — round {round_no}/{rounds}"
+            + (f" (waiting {int(wait)}s first)" if wait else ""),
+            parse=False,
+        )
+        if wait:
+            with job.lock:
+                job.status = f"Retry round {round_no}/{rounds} starts in {int(wait)}s…"
+                job.bump()
+            _sleep_unless_cancelled(wait)
+
+        for fix in targets:
+            if job.cancel_flag:
+                break
+            model = fix["model"]
+            fields = {
+                **context,
+                "index": int(fix["track_index"]),
+                "title": str(fix.get("title") or model.title),
+                "round": round_no,
+                "rounds": rounds,
+                "action": "auto",
+            }
+            failure_log.record("retry_start", **fields)
+            job.begin_retry(fix, f"Retrying (round {round_no}/{rounds})")
+            try:
+                result = _remediate_from_options(
+                    model, dest, options, callbacks=callbacks, cover=cover
+                )
+            except Exception as exc:  # noqa: BLE001
+                job.append_fix_log(f"Error: {exc}")
+                result = TrackDownloadResult("failed", str(exc), error=str(exc))
+
+            if result.status == "done":
+                job.end_retry(fix, ok=True, detail=result.detail or "Saved")
+                failure_log.record("recovered", **fields, detail=result.detail)
+            elif result.status == "cancelled":
+                job.end_retry(fix, ok=False, detail="Cancelled")
+            else:
+                reason = result.error or result.detail or "Failed"
+                fix["last_error"] = reason
+                job.end_retry(fix, ok=False, detail=result.detail or reason)
+                failure_log.record(
+                    "retry_failed",
+                    **fields,
+                    error=reason,
+                    attempts=result.attempts,
+                    methods=result.methods,
+                )
+
+    leftover = _failed_fixes_for_job()
+    if leftover and not job.cancel_flag:
+        for fix in leftover:
+            failure_log.record(
+                "gave_up",
+                **context,
+                index=int(fix["track_index"]),
+                title=str(fix.get("title") or ""),
+                rounds=rounds,
+                error=str(fix.get("last_error") or fix.get("detail") or ""),
+            )
+        job.append_log(
+            f"Gave up on {len(leftover)} song(s) after {rounds} retry round(s); "
+            "they stay in the Needs attention list.",
+            parse=False,
+        )
+    elif had_failures and not leftover and not job.cancel_flag:
+        job.append_log("Every failed song was recovered by retrying.", parse=False)
+    return had_failures and not leftover and not job.cancel_flag
+
+
 def _run_download(
     *,
     url: str,
@@ -2625,6 +3024,23 @@ def _run_download(
         with job.lock:
             job.track_models[track.index] = track
 
+    def on_track_failed(track: Track, result: Any) -> None:
+        job.describe_failure(track.index, result.error or result.detail)
+        failure_log.record(
+            "failed",
+            job_id=job.job_id,
+            artist=job.artist,
+            album=job.album,
+            index=track.index,
+            title=track.title,
+            track_artists=track.artists,
+            error=result.error or result.detail,
+            detail=result.detail,
+            attempts=result.attempts,
+            methods=result.methods,
+            url=job.url,
+        )
+
     callbacks = DownloadCallbacks(
         log=log,
         progress=progress,
@@ -2633,6 +3049,7 @@ def _run_download(
         should_skip_track=should_skip_track,
         on_tracks=on_tracks,
         on_track_model=on_track_model,
+        on_track_failed=on_track_failed,
     )
     cover_bytes, cover_mime = _load_cover_bytes(
         options.get("cover_path"),
@@ -2667,6 +3084,18 @@ def _run_download(
             cover_bytes=cover_bytes,
             cover_mime=cover_mime,
         )
+        rounds = int(options.get("retry_rounds") or 0)
+        if rounds > 0 and not job.cancel_flag and job.failed > 0:
+            try:
+                if _auto_retry_failed(
+                    dest=dest,
+                    options=options,
+                    rounds=rounds,
+                    cover=(cover_bytes, cover_mime),
+                ):
+                    code = 0
+            except Exception as exc:  # noqa: BLE001 - a retry bug must not lose the job
+                job.append_log(f"Retry error: {exc}", parse=False)
     except Exception as exc:  # noqa: BLE001
         job.append_log(f"Error: {exc}")
         code = 1
@@ -2707,6 +3136,14 @@ def _run_download(
             summary["status"] = hist_status
             summary["percent"] = job.percent
             summary["status_text"] = job.status
+            # A link that failed before any song was read has no song rows to
+            # retry, so the job itself has to be retryable.
+            if hist_status == "failed" and not job.tracks:
+                summary["link_failed"] = True
+                summary["error"] = next(
+                    (l.strip() for l in reversed(job.logs) if l.startswith("Error")),
+                    "Could not read that link",
+                )
             job.history.appendleft(summary)
             # Filed into history now — the queue's "current job" card should
             # clear rather than keep showing this finished job.
@@ -2778,6 +3215,15 @@ def _run_remediate(
         return
 
     job.append_fix_log(f"Fixing #{track_index} · {model.title} → {artist}/{album}")
+    log_fields = {
+        "job_id": fix_job_id,
+        "artist": artist,
+        "album": album,
+        "index": track_index,
+        "title": model.title,
+        "action": action,
+    }
+    failure_log.record("retry_start", **log_fields)
 
     cover_bytes, cover_mime = _load_cover_bytes(
         options.get("cover_path"),
@@ -2812,10 +3258,23 @@ def _run_remediate(
         )
         result_status = result.status
         result_detail = result.detail or result.status
+        if result_status == "failed" and result.error:
+            result_detail = result.error  # the actual reason, not the summary
+        if result_status == "done":
+            failure_log.record("recovered", **log_fields, detail=result.detail)
+        elif result_status != "cancelled":
+            failure_log.record(
+                "retry_failed",
+                **log_fields,
+                error=result.error or result_detail,
+                attempts=result.attempts,
+                methods=result.methods,
+            )
     except Exception as exc:  # noqa: BLE001
         job.append_fix_log(f"Error: {exc}")
         result_status = "failed"
         result_detail = str(exc)
+        failure_log.record("retry_failed", **log_fields, error=str(exc))
     finally:
         with job.lock:
             fix = job._find_open_fix(fix_id=fix_id)

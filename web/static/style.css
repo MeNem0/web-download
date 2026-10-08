@@ -711,6 +711,7 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 /* Playlist finder + shared result lists */
 .playlist-find { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: -4px; }
 .playlist-find .cover-search-status { flex: 1 1 200px; min-width: 0; }
+.playlist-find #btn-playlist-toggle { margin-left: auto; }
 
 .cover-search-status { font-size: 0.82rem; color: var(--muted); line-height: 1.4; }
 .cover-search-status.is-error { color: var(--danger); }
@@ -995,6 +996,11 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 .track.failed .track-detail { color: var(--danger); }
 .track-side { min-width: 0; }
 
+/* A failed song is clearly marked, with its fixes right on the row. */
+.track.failed { background: var(--danger-soft); }
+.track.failed .track-detail { white-space: normal; overflow-wrap: anywhere; }
+.track-side.track-fix { grid-column: 3 / -1; display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 4px; }
+
 /* Queue */
 .queue-current { display: grid; }
 
@@ -1026,6 +1032,8 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 .queue-item-title { font-size: 0.92rem; font-weight: 600; overflow-wrap: anywhere; }
 .queue-item-sub { font-size: 0.8rem; color: var(--muted); }
 .queue-item-meta { font-size: 0.76rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.queue-item-error { font-size: 0.8rem; color: var(--danger); overflow-wrap: anywhere; }
+.queue-item-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
 .queue-meter { height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; margin: 6px 0 2px; }
 .queue-meter > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.4s var(--ease); }
@@ -1057,7 +1065,10 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 .fix-item-detail { font-size: 0.8rem; color: var(--danger); overflow-wrap: anywhere; }
 .fix-item-meta { font-size: 0.76rem; color: var(--muted); overflow-wrap: anywhere; }
 .fix-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.fix-continue { width: 100%; }
+.fix-footer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.fix-retry-all { min-height: 44px; }
+
+.fix-retry-all[disabled] { box-shadow: none; }
 
 /* Raw log */
 .log-panel { padding: 0; overflow: hidden; }
@@ -1088,6 +1099,90 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
   word-break: break-word;
   color: var(--muted);
 }
+
+/* Failure log */
+.count-pill {
+  margin-left: 8px;
+  min-width: 22px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.failure-panel summary > span:first-child { flex: 1; }
+
+.failure-body { display: grid; gap: 12px; padding: 4px 16px 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+
+.failure-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.failure-actions { display: flex; gap: 6px; }
+.failure-actions a.btn { text-decoration: none; }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chip {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.chip:hover { color: var(--text); background: var(--surface-3); }
+.chip.is-active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+
+.failure-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 420px; overflow: auto; }
+
+.failure-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: start;
+  padding: 10px 8px;
+  border-radius: var(--r-md);
+}
+.failure-item:hover { background: var(--surface-2); }
+
+.failure-dot { width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--faint); }
+.failure-main { min-width: 0; display: grid; gap: 2px; }
+.failure-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.failure-title { font-size: 0.88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure-where { font-size: 0.76rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.failure-msg { font-size: 0.78rem; color: var(--danger); overflow-wrap: anywhere; }
+.failure-meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 0.72rem; color: var(--faint); }
+.failure-path { font-family: var(--mono); font-size: 0.7rem; color: var(--faint); overflow-wrap: anywhere; }
+.failure-path:empty { display: none; }
+
+.failure-badge {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.failure-item.is-failed .failure-dot,
+.failure-item.is-retry_failed .failure-dot { background: var(--danger); }
+.failure-item.is-failed .failure-badge,
+.failure-item.is-retry_failed .failure-badge { color: var(--danger); border-color: var(--danger-line); }
+.failure-item.is-gave_up .failure-dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.failure-item.is-gave_up .failure-badge { color: #1d0a06; background: var(--danger); border-color: var(--danger); }
+.failure-item.is-recovered .failure-dot { background: var(--accent); }
+.failure-item.is-recovered .failure-badge { color: var(--accent); border-color: var(--accent-line); }
+.failure-item.is-recovered .failure-msg { color: var(--muted); }
+.failure-item.is-retry_start .failure-dot { background: var(--accent-2); }
+.failure-item.is-retry_start .failure-badge { color: var(--accent-2); border-color: var(--accent-2); }
 
 /* ---- Library ------------------------------------------------------------------------- */
 
@@ -1145,14 +1240,13 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 .lib-toolbar .btn { min-height: 36px; padding: 0 12px; font-size: 0.84rem; border-radius: 10px; }
 .lib-toolbar .btn.solid { box-shadow: none; }
 
+.library-panel { scroll-margin-top: calc(var(--appbar-h) + 12px); }
+
 .lib-tree {
   display: grid;
   gap: 2px;
-  padding: 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface-2);
   align-content: start;
+  margin: 0 -6px;
 }
 
 .lib-node { position: relative; }
@@ -1224,7 +1318,130 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 }
 
 .lib-badge.folder { background: var(--accent-soft); color: var(--accent); }
+.lib-badge.folder.album { background: color-mix(in srgb, var(--accent-2) 14%, transparent); color: var(--accent-2); }
 .lib-badge svg { width: 18px; height: 18px; }
+
+/* Artists: a colored initial, with a hue that is stable per name. */
+.lib-badge.avatar {
+  background: hsl(var(--h, 160) 60% 52% / 0.16);
+  color: hsl(var(--h, 160) 75% 68%);
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+[data-theme="light"] .lib-badge.avatar {
+  background: hsl(var(--h, 160) 60% 45% / 0.13);
+  color: hsl(var(--h, 160) 65% 31%);
+}
+
+/* Songs show their track number where the icon would be. */
+.lib-badge.file.has-num {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.lib-size {
+  margin-left: auto;
+  padding-left: 12px;
+  font-size: 0.74rem;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Alphabet headings between artists. */
+.lib-letter {
+  padding: 16px 12px 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--faint);
+}
+.lib-letter:first-child { padding-top: 4px; }
+
+/* "Show N more" at the end of a long folder. */
+.lib-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  justify-self: start;
+  min-height: 36px;
+  margin: 4px 8px 8px calc(48px + var(--d, 0) * 20px);
+  padding: 0 14px;
+  border: 1px dashed var(--accent-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: background 0.12s var(--ease);
+}
+.lib-more:hover:not(:disabled) { background: var(--accent-soft); }
+.lib-more:disabled { opacity: 0.6; }
+.lib-more span { color: var(--muted); font-weight: 500; }
+
+/* Pager */
+.lib-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.lib-pager[hidden] { display: none; }
+
+.lib-pager-info { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.lib-pager-nav { display: flex; align-items: center; gap: 4px; }
+
+.lib-page {
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.lib-page:hover:not(:disabled) { background: var(--surface-3); border-color: var(--line-strong); }
+.lib-page:disabled { opacity: 0.4; cursor: not-allowed; }
+.lib-page.is-current { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.lib-page-gap { padding: 0 2px; color: var(--faint); }
+
+.lib-pager-size select { min-height: 36px; width: auto; padding: 0 34px 0 12px; font-size: 0.84rem; border-radius: 10px; }
+
+/* Loading placeholders while a (possibly slow, networked) folder is read. */
+.lib-skeleton { display: grid; gap: 6px; padding: 2px 6px 2px calc(8px + var(--d, 0) * 20px); }
+
+.lib-skeleton i {
+  display: block;
+  height: 52px;
+  border-radius: var(--r-md);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+.lib-skeleton i:nth-child(odd) { opacity: 0.8; }
+
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+/* A thin guide line shows which rows belong to the open folder. */
+.lib-children::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  left: calc(8px + var(--d, 0) * 20px + 17px);
+  width: 1px;
+  background: var(--line);
+  pointer-events: none;
+}
 
 .lib-copy { min-width: 0; display: grid; }
 .lib-name { font-size: 0.93rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1580,6 +1797,14 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
   .lib-actions { gap: 6px; padding: 0 0 4px 38px; }
   .lib-btn { min-height: 30px; padding: 0 10px; font-size: 0.74rem; }
   .lib-item.is-folder .lib-sub { display: none; }
+  /* A folder's actions appear once it is open - keeps a long artist list light. */
+  .lib-item.is-folder .lib-actions { display: none; }
+  .lib-node[aria-expanded="true"] > .lib-item.is-folder .lib-actions,
+  .lib-search-hit .lib-item.is-folder .lib-actions { display: flex; }
+  .lib-item.is-folder { grid-template-areas: "lead body"; }
+  .lib-node[aria-expanded="true"] > .lib-item.is-folder,
+  .lib-search-hit .lib-item.is-folder { grid-template-areas: "lead body" "actions actions"; }
+
   /* Tapping a song opens the editor, whose footer already has Rename/Delete. */
   .lib-item.is-file { grid-template-areas: "lead body"; }
   .lib-item.is-file .lib-actions { display: none; }
@@ -1600,6 +1825,9 @@ input[type="search"]::-webkit-search-cancel-button { display: none; }
 }
 
 @media (max-width: 559px) {
+  /* The pager keeps only prev / current / next on a narrow screen. */
+  .lib-page:not([aria-label]):not(.is-current), .lib-page-gap { display: none; }
+  .lib-size { display: none; }
   .form-side-btn span { display: none; }
   .form-side-btn { width: 46px; padding: 0; }
   .options { grid-template-columns: minmax(0, 1fr); }

@@ -51,6 +51,7 @@
     btnFindPlaylist: $("btn-find-playlist"),
     playlistFindStatus: $("playlist-find-status"),
     playlistFindResults: $("playlist-find-results"),
+    btnPlaylistToggle: $("btn-playlist-toggle"),
     btnNewArtist: $("btn-new-artist"),
     limit: $("limit"),
     stripTerms: $("strip-terms"),
@@ -87,6 +88,8 @@
     btnCancel: $("btn-cancel"),
     btnClear: $("btn-clear"),
     btnFixContinue: $("btn-fix-continue"),
+    btnFixRetryAll: $("btn-fix-retry-all"),
+    retryRounds: $("retry-rounds"),
     barFill: $("bar-fill"),
     fileFill: $("file-fill"),
     fileWrap: $("file-meter-wrap"),
@@ -618,10 +621,24 @@
     if (!els.playlistFindResults) return;
     els.playlistFindResults.innerHTML = "";
     els.playlistFindResults.classList.add("hidden");
+    if (els.btnPlaylistToggle) els.btnPlaylistToggle.hidden = true;
+  }
+
+  // The options can be tucked away (and brought back) without losing them.
+  function setPlaylistResultsVisible(visible) {
+    const list = els.playlistFindResults;
+    const btn = els.btnPlaylistToggle;
+    if (!list || !btn) return;
+    const count = list.children.length;
+    list.classList.toggle("hidden", !visible || !count);
+    btn.hidden = !count;
+    btn.textContent = visible ? "Hide options" : `Show options (${count})`;
+    btn.setAttribute("aria-expanded", String(!!visible));
   }
 
   async function pickPlaylist(album, hit) {
-    clearPlaylistResults();
+    // Collapse, but keep the list: "Show options" can bring it back to pick again.
+    setPlaylistResultsVisible(false);
     await applyAlbumSuggestHit({
       id: album.id,
       kind: "album",
@@ -674,7 +691,7 @@
       li.appendChild(btn);
       list.appendChild(li);
     });
-    list.classList.toggle("hidden", !results.length);
+    setPlaylistResultsVisible(results.length > 0);
   }
 
   async function findPlaylist() {
@@ -768,7 +785,9 @@
     updateActionButtons({ downloading });
   }
 
-  function renderTracks(tracks) {
+  let lastHistory = [];
+
+  function renderTracks(tracks, fixes = [], jobId = "") {
     if (!tracks || !tracks.length) {
       els.trackList.innerHTML =
         '<li class="track-empty">Songs show up here once the playlist is read.</li>';
@@ -783,11 +802,22 @@
         : status === "pending"
           ? '<div class="track-detail">Queued</div>'
           : "";
+      // A failed song can be retried, or given a different link, right here;
+      // the same fix is also listed (with more options) under Needs attention.
+      const fix =
+        status === "failed"
+          ? fixes.find((f) => f.track_index === track.index && f.job_id === jobId)
+          : null;
       const actions = track.skippable
         ? `<div class="track-side">
             <button type="button" class="btn tiny" data-skip-track="${track.index}">Skip</button>
           </div>`
-        : `<div class="track-side" aria-hidden="true"></div>`;
+        : fix
+          ? `<div class="track-side track-fix">
+              <button type="button" class="btn tiny" data-track-retry="${escapeHtml(fix.id)}"${fix.remediable ? "" : " disabled"}>Retry</button>
+              <button type="button" class="btn tiny" data-track-newlink="${escapeHtml(fix.id)}" data-title="${escapeHtml(track.title || "Track")}"${fix.remediable ? "" : " disabled"}>New link</button>
+            </div>`
+          : `<div class="track-side" aria-hidden="true"></div>`;
       return `
         <li class="track ${status}" data-index="${track.index}">
           <span class="mark">${ICON[status] || ""}</span>
@@ -890,6 +920,12 @@
     const canSkipAll =
       !s.remediating && fixes.some((t) => t.status === "failed" && t.remediable);
     if (els.btnFixContinue) els.btnFixContinue.disabled = !canSkipAll;
+    if (els.btnFixRetryAll) {
+      els.btnFixRetryAll.disabled = !canSkipAll;
+      const n = fixes.filter((t) => t.status === "failed" && t.remediable).length;
+      const label = els.btnFixRetryAll.querySelector("span");
+      if (label) label.textContent = n > 1 ? `Retry all (${n})` : "Retry all";
+    }
   }
 
   function escapeHtml(value) {
@@ -945,11 +981,23 @@
     if (!history.length) {
       els.queueHistory.innerHTML = '<li class="track-empty">Nothing yet</li>';
     } else {
-      els.queueHistory.innerHTML = history.slice(0, 8).map((item) => `
+      els.queueHistory.innerHTML = history.slice(0, 8).map((item) => {
+        // A link that failed before any song was read has no song rows to
+        // retry, so the whole job gets the buttons.
+        const retry = item.link_failed
+          ? `<div class="queue-item-error">${escapeHtml(item.error || "Could not read that link")}</div>
+             <div class="queue-item-actions">
+               <button type="button" class="btn tiny" data-job-retry="${escapeHtml(item.id)}">Retry</button>
+               <button type="button" class="btn tiny" data-job-newlink="${escapeHtml(item.id)}">New link</button>
+             </div>`
+          : "";
+        return `
         <li class="queue-item ${escapeHtml(item.status || "")}">
           <div class="queue-item-title">${escapeHtml(item.label || "Job")}</div>
           <div class="queue-item-sub">${escapeHtml(item.status_text || item.status || "")}</div>
-        </li>`).join("");
+          ${retry}
+        </li>`;
+      }).join("");
     }
 
   }
@@ -1021,7 +1069,8 @@
         : "Downloader engine version";
     }
 
-    renderTracks(s.tracks || []);
+    lastHistory = s.history || [];
+    renderTracks(s.tracks || [], s.fixes || [], s.job_id || "");
     els.trackSummary.textContent = summarize(s.tracks || []);
     renderFixPanel(s);
     renderQueue(s);
@@ -1078,6 +1127,8 @@
       browser: els.browser.value,
       limit: limitRaw ? Number(limitRaw) : null,
       tracks: tracksRaw || null,
+      // Blank = let the server decide (its default is a couple of retry rounds).
+      retry_rounds: els.retryRounds?.value ? Number(els.retryRounds.value) : null,
     };
   }
 
@@ -1753,6 +1804,19 @@
   }
 
   els.trackList?.addEventListener("click", (ev) => {
+    const retryBtn = ev.target.closest("[data-track-retry]");
+    if (retryBtn) {
+      remediate(retryBtn.getAttribute("data-track-retry"), "retry").catch((e) => alert(e.message));
+      return;
+    }
+    const linkBtn = ev.target.closest("[data-track-newlink]");
+    if (linkBtn) {
+      openRemediateModal(
+        linkBtn.getAttribute("data-track-newlink"),
+        linkBtn.getAttribute("data-title") || "Track",
+      );
+      return;
+    }
     const btn = ev.target.closest("[data-skip-track]");
     if (!btn) return;
     const index = Number(btn.getAttribute("data-skip-track"));
@@ -1786,6 +1850,62 @@
       for (const fixId of ids) {
         await remediate(fixId, "skip");
       }
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+  });
+
+  els.queueHistory?.addEventListener("click", async (ev) => {
+    const retryBtn = ev.target.closest("[data-job-retry]");
+    if (retryBtn) {
+      retryBtn.disabled = true;
+      try {
+        const res = await fetch("/api/jobs/retry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: retryBtn.getAttribute("data-job-retry") }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || "Could not retry");
+        if (data.status) applyState(data.status);
+      } catch (e) {
+        retryBtn.disabled = false;
+        alert(e.message || String(e));
+      }
+      return;
+    }
+
+    // A fresh link for the same album: load its details into the form, so
+    // only the link needs pasting.
+    const linkBtn = ev.target.closest("[data-job-newlink]");
+    if (!linkBtn) return;
+    const item = lastHistory.find((h) => h.id === linkBtn.getAttribute("data-job-newlink"));
+    if (!item) return;
+    document.querySelector('[data-view-btn="download"]')?.click();
+    const radio = document.querySelector(
+      `input[name="release-type"][value="${item.release_type || "album"}"]`,
+    );
+    if (radio && !radio.checked) {
+      radio.checked = true;
+      radio.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    els.artist.value = item.artist || "";
+    els.album.value = item.album || "";
+    if (els.albumArtist) els.albumArtist.value = item.album_artist || "";
+    els.url.value = "";
+    updatePathPreview();
+    updateActionButtons({ downloading: lastDownloadBusy });
+    els.url.focus();
+    els.url.scrollIntoView({ block: "center", behavior: "smooth" });
+  });
+
+  els.btnFixRetryAll?.addEventListener("click", async () => {
+    els.btnFixRetryAll.disabled = true;
+    try {
+      const res = await fetch("/api/remediate/retry-all", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Could not retry");
+      if (data.status) applyState(data.status);
     } catch (e) {
       alert(e.message || String(e));
     }
@@ -1939,6 +2059,10 @@
     if (field && !field.contains(ev.target)) closeAlbumSuggest();
   });
   els.btnFindPlaylist?.addEventListener("click", findPlaylist);
+  els.btnPlaylistToggle?.addEventListener("click", () => {
+    const showing = !els.playlistFindResults.classList.contains("hidden");
+    setPlaylistResultsVisible(!showing);
+  });
   els.albumArtist?.addEventListener("input", () => {
     albumArtistTouched = !!els.albumArtist.value.trim();
     updatePathPreview();

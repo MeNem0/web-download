@@ -22,7 +22,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=41" />
+  <link rel="stylesheet" href="/static/style.css?v=43" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -174,6 +174,7 @@
             <span>Find YouTube playlist</span>
           </button>
           <span id="playlist-find-status" class="cover-search-status hidden"></span>
+          <button id="btn-playlist-toggle" class="btn tiny" type="button" aria-controls="playlist-find-results" aria-expanded="true" hidden>Hide options</button>
         </div>
         <ul id="playlist-find-results" class="cover-search-results hidden" role="listbox"></ul>
 
@@ -254,6 +255,17 @@
                 <option value="brave">Brave</option>
               </select>
             </label>
+            <label class="field tight">
+              <span>Retry failed songs</span>
+              <select id="retry-rounds" title="After the first pass, songs that failed are tried again, waiting a little longer each round">
+                <option value="">Automatically (default)</option>
+                <option value="0">Don't retry</option>
+                <option value="1">1 extra round</option>
+                <option value="2">2 extra rounds</option>
+                <option value="3">3 extra rounds</option>
+                <option value="5">5 extra rounds</option>
+              </select>
+            </label>
             <div class="toggles">
               <label class="toggle"><input id="force" type="checkbox" /> <span>Force</span></label>
               <label class="toggle"><input id="metadata" type="checkbox" checked /> <span>Metadata</span></label>
@@ -314,9 +326,15 @@
         <ul id="fix-list" class="fix-list">
           <li class="track-empty">No failed tracks</li>
         </ul>
-        <button id="btn-fix-continue" class="btn ghost fix-continue" type="button" disabled>
-          Skip all
-        </button>
+        <div class="fix-footer">
+          <button id="btn-fix-retry-all" class="btn solid fix-retry-all" type="button" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
+            <span>Retry all</span>
+          </button>
+          <button id="btn-fix-continue" class="btn ghost fix-continue" type="button" disabled>
+            Skip all
+          </button>
+        </div>
       </aside>
 
       <aside class="queue-panel panel" aria-label="Download queue">
@@ -345,6 +363,32 @@
           <li class="track-empty">Songs show up here as each one starts.</li>
         </ul>
       </section>
+
+      <details class="panel log-panel failure-panel" id="failure-panel">
+        <summary>
+          <span>Failure log</span>
+          <span id="failure-count" class="count-pill" hidden>0</span>
+        </summary>
+        <div class="failure-body">
+          <div class="failure-toolbar">
+            <div class="chip-row" role="group" aria-label="Filter the failure log">
+              <button type="button" class="chip is-active" data-failure-filter="key">Key events</button>
+              <button type="button" class="chip" data-failure-filter="fail">Failures</button>
+              <button type="button" class="chip" data-failure-filter="ok">Recovered</button>
+              <button type="button" class="chip" data-failure-filter="all">Everything</button>
+            </div>
+            <div class="failure-actions">
+              <button id="btn-failure-refresh" class="btn tiny" type="button">Refresh</button>
+              <a id="btn-failure-export" class="btn tiny" href="/api/failures/export" download="failures.log">Export</a>
+              <button id="btn-failure-clear" class="btn tiny danger" type="button">Clear</button>
+            </div>
+          </div>
+          <ul id="failure-list" class="failure-list">
+            <li class="track-empty">Nothing logged yet.</li>
+          </ul>
+          <p id="failure-path" class="failure-path"></p>
+        </div>
+      </details>
 
       <details class="panel log-panel">
         <summary>
@@ -391,8 +435,9 @@
           </div>
         </div>
         <div id="lib-list" class="lib-tree" role="tree">
-          <p class="track-empty">Loading library…</p>
+          <div class="lib-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
         </div>
+        <div id="lib-pager" class="lib-pager" hidden></div>
       </section>
     </section>
   </div>
@@ -654,6 +699,7 @@
 
   <script src="/static/app.js?v=41"></script>
   <script src="/static/library.js?v=41"></script>
+  <script src="/static/failures.js?v=42"></script>
   <script src="/static/ui.js?v=41"></script>
 </body>
 </html>

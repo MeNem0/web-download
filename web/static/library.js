@@ -5,6 +5,7 @@
     crumbs: $("lib-crumbs"),
     summary: $("lib-summary"),
     list: $("lib-list"),
+    pager: $("lib-pager"),
     search: $("lib-search"),
     btnSearchClear: $("btn-lib-search-clear"),
     btnNew: $("btn-lib-new"),
@@ -69,7 +70,24 @@
       '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4.6c0-.7.58-1.3 1.3-1.3h2.75l1.1 1.3h5.55c.72 0 1.3.58 1.3 1.3v5.7c0 .72-.58 1.3-1.3 1.3H3.3c-.72 0-1.3-.58-1.3-1.3V4.6Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
     file:
       '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="5.1" cy="12" r="1.9" stroke="currentColor" stroke-width="1.3"/><path d="M7 12V3.6L12.4 2.4v7.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    disc:
+      '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.6" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.7" stroke="currentColor" stroke-width="1.3"/></svg>',
   };
+
+  // ---- Paging -------------------------------------------------------------------
+  // The tree is paged (artists at the root, or search results) so a large
+  // library doesn't render as one endless list; folders opened inside a page
+  // show "Show more" when they hold more than a page of their own.
+  const PAGE_SIZES = [20, 50, 100, 0]; // 0 = everything
+  let pageSize = 20;
+  try {
+    // Number(null) is 0, which would read a never-saved setting as "show all".
+    const raw = localStorage.getItem("md-lib-pagesize");
+    if (raw !== null && PAGE_SIZES.includes(Number(raw))) pageSize = Number(raw);
+  } catch (_) { /* storage blocked: keep the default */ }
+  let pageIndex = 0;
+  const shown = new Map(); // folder path -> how many of its children are showing
+  const visibleLimit = (path) => shown.get(path) ?? (pageSize || Infinity);
 
   let rootPath = "";
   let libPath = "";
@@ -350,6 +368,7 @@
       if (searchQuery) clearSearch({ keepFocus: false });
       const data = await fetchListing(path);
       rootPath = data.root || rootPath;
+      if ((data.path || "") !== libPath) pageIndex = 0;
       libPath = data.path || "";
       await render();
     } catch (err) {
@@ -392,24 +411,25 @@
       if (!total) {
         els.list.innerHTML =
           '<p class="track-empty">No matches. Try another title, artist, or album.</p>';
+        renderPager(0);
         updateSelectionUi();
         return;
       }
 
-      const html = [];
-      for (const folder of folders) {
-        html.push(renderSearchFolder(folder));
-      }
-      for (const file of files) {
-        html.push(renderSearchFile(file));
-      }
-      els.list.innerHTML = html.join("");
+      const entries = [
+        ...folders.map((folder) => renderSearchFolder(folder)),
+        ...files.map((file) => renderSearchFile(file)),
+      ];
+      const { from, to } = pageRange(entries.length);
+      els.list.innerHTML = entries.slice(from, to).join("");
       bindTreeEvents(els.list);
+      renderPager(entries.length);
       updateSelectionUi();
     } catch (err) {
       if (seq !== searchSeq) return;
       els.list.innerHTML = `<p class="track-empty">${escapeHtml(err.message || "Error")}</p>`;
       els.summary.textContent = "Search failed";
+      renderPager(0);
     }
   }
 
@@ -470,67 +490,237 @@
     if (els.btnSearchClear) els.btnSearchClear.disabled = true;
     renderCrumbs();
     try {
+      if (!cache.has(libPath || "")) els.list.innerHTML = skeletonRows(6);
       const data = await fetchListing(libPath || null);
       rootPath = data.root || rootPath;
       libPath = data.path || libPath;
-      const folderCount = (data.folders || []).length;
-      const fileCount = (data.files || []).length;
-      els.summary.textContent = `${folderCount} folders · ${fileCount} tracks`;
+      const folders = data.folders || [];
+      const files = sortFiles(data.files);
+      els.summary.textContent = `${folders.length} folders · ${files.length} tracks`;
 
-      if (!folderCount && !fileCount) {
+      const entries = [
+        ...folders.map((folder) => ({ folder })),
+        ...files.map((file) => ({ file })),
+      ];
+      if (!entries.length) {
         els.list.innerHTML = '<p class="track-empty">This folder is empty.</p>';
+        renderPager(0);
         updateSelectionUi();
         return;
       }
 
+      const { from, to } = pageRange(entries.length);
       const html = [];
-      for (const folder of data.folders || []) {
-        html.push(await renderFolder(folder, 0));
-      }
-      for (const file of sortFiles(data.files)) {
-        html.push(renderFile(file, 0));
+      let lastLetter = "";
+      for (const entry of entries.slice(from, to)) {
+        if (entry.file) {
+          html.push(renderFile(entry.file, 0));
+          continue;
+        }
+        const letter = initialOf(entry.folder.name);
+        if (letter !== lastLetter) {
+          html.push(`<div class="lib-letter" aria-hidden="true">${escapeHtml(letter)}</div>`);
+          lastLetter = letter;
+        }
+        html.push(await renderFolder(entry.folder, 0));
       }
       els.list.innerHTML = html.join("");
       bindTreeEvents(els.list);
+      renderPager(entries.length);
       updateSelectionUi();
     } catch (err) {
       els.list.innerHTML = `<p class="track-empty">${escapeHtml(err.message || "Error")}</p>`;
+      renderPager(0);
     }
+  }
+
+  // ---- Paging + row helpers ---------------------------------------------------------
+
+  function pageRange(total) {
+    const size = pageSize || total || 1;
+    const pages = Math.max(1, Math.ceil(total / size));
+    pageIndex = Math.min(Math.max(pageIndex, 0), pages - 1);
+    const from = pageIndex * size;
+    return { from, to: Math.min(total, from + size), pages, size };
+  }
+
+  // Page numbers to show: first, last, and a window around the current page.
+  function pageWindow(pages, current) {
+    const keep = new Set([0, pages - 1, current - 1, current, current + 1]);
+    const out = [];
+    let prev = -1;
+    for (const n of [...keep].filter((n) => n >= 0 && n < pages).sort((a, b) => a - b)) {
+      // An ellipsis for a single skipped page would hide more than it saves.
+      if (prev !== -1 && n - prev === 2) out.push(prev + 1);
+      else if (prev !== -1 && n - prev > 2) out.push("gap");
+      out.push(n);
+      prev = n;
+    }
+    return out;
+  }
+
+  function renderPager(total) {
+    const el = els.pager;
+    if (!el) return;
+    // A library that fits on the smallest page needs no pager at all.
+    if (total <= PAGE_SIZES[0]) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    const { from, to, pages } = pageRange(total);
+    const label = (size) => (size ? `${size} per page` : "Show all");
+    const nav =
+      pages > 1
+        ? `<div class="lib-pager-nav" role="navigation" aria-label="Library pages">
+            <button type="button" class="lib-page" data-page="${pageIndex - 1}" aria-label="Previous page"${pageIndex === 0 ? " disabled" : ""}>‹</button>
+            ${pageWindow(pages, pageIndex)
+              .map((n) =>
+                n === "gap"
+                  ? '<span class="lib-page-gap" aria-hidden="true">…</span>'
+                  : `<button type="button" class="lib-page${n === pageIndex ? " is-current" : ""}" data-page="${n}"${n === pageIndex ? ' aria-current="page"' : ""}>${n + 1}</button>`,
+              )
+              .join("")}
+            <button type="button" class="lib-page" data-page="${pageIndex + 1}" aria-label="Next page"${pageIndex >= pages - 1 ? " disabled" : ""}>›</button>
+          </div>`
+        : "";
+    el.innerHTML = `
+      <span class="lib-pager-info">${pages > 1 ? `${from + 1}–${to} of ${total}` : `All ${total}`}</span>
+      ${nav}
+      <label class="lib-pager-size">
+        <span class="sr-only">Items per page</span>
+        <select data-page-size>${PAGE_SIZES.map(
+          (size) => `<option value="${size}"${size === pageSize ? " selected" : ""}>${label(size)}</option>`,
+        ).join("")}</select>
+      </label>`;
+    el.hidden = false;
+  }
+
+  function goToPage(next) {
+    pageIndex = next;
+    render().then(() => {
+      document.querySelector(".library-panel")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  }
+
+  els.pager?.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-page]");
+    if (!btn || btn.disabled) return;
+    goToPage(Number(btn.getAttribute("data-page")));
+  });
+
+  els.pager?.addEventListener("change", (ev) => {
+    const select = ev.target.closest("[data-page-size]");
+    if (!select) return;
+    pageSize = Number(select.value);
+    try { localStorage.setItem("md-lib-pagesize", String(pageSize)); } catch (_) { /* ignore */ }
+    pageIndex = 0;
+    shown.clear();
+    render();
+  });
+
+  const initialOf = (name) => {
+    const ch = String(name || "").trim().charAt(0).toUpperCase();
+    return /[A-Z]/.test(ch) ? ch : /[0-9]/.test(ch) ? "#" : ch || "#";
+  };
+
+  // A stable hue per name, so each artist keeps the same avatar color.
+  function hueFor(name) {
+    let h = 0;
+    for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return h;
+  }
+
+  function fmtSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function skeletonRows(count, depth = 0) {
+    return `<div class="lib-skeleton" aria-hidden="true" style="--d:${depth}">${"<i></i>".repeat(count)}</div>`;
+  }
+
+  // Artist -> album -> songs is the library's shape, so depth says what a folder is.
+  function folderKind(depth) {
+    return depth === 0 ? "artist" : depth === 1 ? "album" : "folder";
+  }
+
+  function folderSub(depth, listing) {
+    const kind = folderKind(depth);
+    if (!listing) return kind === "artist" ? "Artist" : kind === "album" ? "Album" : "Folder";
+    const folders = (listing.folders || []).length;
+    const songs = (listing.files || []).length;
+    const parts = [];
+    if (folders) parts.push(`${folders} ${kind === "artist" ? "album" : "folder"}${folders === 1 ? "" : "s"}`);
+    if (songs) parts.push(`${songs} song${songs === 1 ? "" : "s"}`);
+    return parts.join(" · ") || "Empty";
+  }
+
+  // One level of a folder's contents, capped: long folders get a "Show more" row.
+  async function renderChildren(path, depth, listing) {
+    const entries = [
+      ...(listing.folders || []).map((folder) => ({ folder })),
+      ...sortFiles(listing.files).map((file) => ({ file })),
+    ];
+    if (!entries.length) return `<div class="lib-empty" style="--d:${depth + 1}">Empty folder</div>`;
+    const limit = visibleLimit(path);
+    const bits = [];
+    for (const entry of entries.slice(0, limit)) {
+      bits.push(entry.folder ? await renderFolder(entry.folder, depth + 1) : renderFile(entry.file, depth + 1));
+    }
+    if (entries.length > limit) {
+      const left = entries.length - limit;
+      const step = Math.min(pageSize || left, left);
+      bits.push(
+        `<button type="button" class="lib-more" data-more="${escapeHtml(path)}" style="--d:${depth + 1}">Show ${step} more<span>${left} left</span></button>`,
+      );
+    }
+    return bits.join("");
+  }
+
+  async function showMore(path, button) {
+    const node = button.closest(".lib-node");
+    const childrenEl = node?.querySelector(":scope > .lib-children");
+    if (!node || !childrenEl) return;
+    const depth = Number(node.style.getPropertyValue("--d")) || 0;
+    shown.set(path, visibleLimit(path) + (pageSize || Infinity));
+    const listing = await fetchListing(path);
+    childrenEl.innerHTML = await renderChildren(path, depth, listing);
+    bindTreeEvents(childrenEl);
   }
 
   async function renderFolder(folder, depth) {
     const open = expanded.has(folder.path);
     let childrenHtml = "";
+    let listing = cache.get(folder.path) || null;
     if (open) {
       try {
-        const child = await fetchListing(folder.path);
-        const bits = [];
-        for (const sub of child.folders || []) {
-          bits.push(await renderFolder(sub, depth + 1));
-        }
-        for (const file of sortFiles(child.files)) {
-          bits.push(renderFile(file, depth + 1));
-        }
-        if (!bits.length) {
-          bits.push(`<div class="lib-empty" style="--d:${depth + 1}">Empty folder</div>`);
-        }
-        childrenHtml = `<div class="lib-children">${bits.join("")}</div>`;
+        listing = await fetchListing(folder.path);
+        childrenHtml = `<div class="lib-children">${await renderChildren(folder.path, depth, listing)}</div>`;
       } catch (err) {
         childrenHtml = `<div class="lib-empty" style="--d:${depth + 1}">${escapeHtml(err.message)}</div>`;
       }
     }
 
+    const kind = folderKind(depth);
+    // Artists get a colored initial, albums a disc, anything deeper a folder.
+    const badge =
+      kind === "artist"
+        ? `<span class="lib-badge avatar" style="--h:${hueFor(folder.name)}" aria-hidden="true">${escapeHtml(initialOf(folder.name))}</span>`
+        : `<span class="lib-badge folder ${kind}">${kind === "album" ? LIB_ICON.disc : LIB_ICON.folder}<span class="sr-only">Folder</span></span>`;
+
     return `
       <div class="lib-node" role="treeitem" aria-expanded="${open}" style="--d:${depth}">
-        <div class="lib-item is-folder">
+        <div class="lib-item is-folder is-${kind}">
           <button class="lib-twist" type="button" data-toggle="${escapeHtml(folder.path)}" aria-label="${open ? "Collapse" : "Expand"}">
             <span class="lib-chevron ${open ? "is-open" : ""}"></span>
           </button>
           <div class="lib-body" data-enter="${escapeHtml(folder.path)}" role="button" tabindex="0">
-            <span class="lib-badge folder">${LIB_ICON.folder}<span class="sr-only">Folder</span></span>
+            ${badge}
             <div class="lib-copy">
               <div class="lib-name">${escapeHtml(folder.name)}</div>
-              <div class="lib-sub">Tap to open · chevron to expand</div>
+              <div class="lib-sub">${escapeHtml(folderSub(depth, listing))}</div>
             </div>
           </div>
           <div class="lib-actions">
@@ -579,11 +769,12 @@
             <input type="checkbox" data-select="${escapeHtml(file.path)}"${checked} />
           </label>
           <div class="lib-body" data-edit="${escapeHtml(file.path)}" role="button" tabindex="0">
-            <span class="lib-badge file">${LIB_ICON.file}<span class="sr-only">MP3</span></span>
+            <span class="lib-badge file${num ? " has-num" : ""}">${num ? escapeHtml(num) : LIB_ICON.file}<span class="sr-only">${num ? `Track ${num}` : "MP3"}</span></span>
             <div class="lib-copy">
-              <div class="lib-name">${num ? `<span class="lib-num">${num}</span>` : ""}${escapeHtml(file.title || file.name)}</div>
+              <div class="lib-name">${escapeHtml(file.title || file.name)}</div>
               <div class="lib-sub">${escapeHtml(sub)}</div>
             </div>
+            ${file.size ? `<span class="lib-size">${fmtSize(file.size)}</span>` : ""}
           </div>
           <div class="lib-actions">
             <button class="lib-btn primary" type="button" data-edit="${escapeHtml(file.path)}">Edit</button>
@@ -625,17 +816,14 @@
       childrenEl.className = "lib-children";
       node.appendChild(childrenEl);
     }
-    childrenEl.innerHTML = `<div class="lib-empty is-loading" style="--d:${depth + 1}">Loading…</div>`;
+    childrenEl.innerHTML = skeletonRows(3, depth + 1);
 
     try {
       const data = await fetchListing(path);
-      const bits = [];
-      for (const sub of data.folders || []) bits.push(await renderFolder(sub, depth + 1));
-      for (const file of sortFiles(data.files)) bits.push(renderFile(file, depth + 1));
-      childrenEl.innerHTML = bits.length
-        ? bits.join("")
-        : `<div class="lib-empty" style="--d:${depth + 1}">Empty folder</div>`;
+      childrenEl.innerHTML = await renderChildren(path, depth, data);
       bindTreeEvents(childrenEl);
+      const sub = item?.querySelector(".lib-sub");
+      if (sub) sub.textContent = folderSub(depth, data);
     } catch (err) {
       childrenEl.innerHTML = `<div class="lib-empty" style="--d:${depth + 1}">${escapeHtml(err.message || "Error")}</div>`;
     }
@@ -662,6 +850,13 @@
         const path = btn.getAttribute("data-toggle");
         const node = btn.closest(".lib-node");
         if (node) await toggleFolder(path, node);
+      });
+    });
+    root.querySelectorAll("[data-more]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        btn.disabled = true;
+        showMore(btn.getAttribute("data-more"), btn).catch(() => { btn.disabled = false; });
       });
     });
     root.querySelectorAll("[data-enter]").forEach((el) => {
@@ -1193,6 +1388,7 @@
   }
 
   function scheduleSearch(value) {
+    if (value.trim() !== searchQuery.trim()) pageIndex = 0;
     searchQuery = value;
     if (els.btnSearchClear) els.btnSearchClear.disabled = !value.trim();
     clearTimeout(searchTimer);
